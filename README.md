@@ -11,10 +11,11 @@ agent CLI can be used through the same core process model.
 
 ## Status
 
-This repository is currently at Phase 3: state store. The package, entrypoints,
-quality tooling, documentation baseline, markdown phase parsing, and durable
-state primitives are in place; process runner behavior will be implemented in
-later phases from `docs/plans/provider-agnostic-task-runner.md`.
+This repository is currently at Phase 4: prompt builder. The package,
+entrypoints, quality tooling, documentation baseline, markdown phase parsing,
+durable state primitives, and worker prompt rendering are in place; process
+runner behavior will be implemented in later phases from
+`docs/plans/provider-agnostic-task-runner.md`.
 
 ## Install For Development
 

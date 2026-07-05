@@ -397,7 +397,12 @@ Suggested config:
 
 ## Detailed Implementation Plan
 
-### Phase 1: Repository Skeleton
+Completion tracking note: when a phase is completed, mark its heading in this
+document with `(Complete)` so the human-readable plan reflects implementation
+progress. Runner state must still live under `.ai-session-handler/`; these
+annotations are documentation only.
+
+### Phase 1: Repository Skeleton (Complete)
 
 - Create `ai-session-handler`.
 - Add `README.md`, `AGENTS.md`, `pyproject.toml`, and a `src/ai_session_handler/`
@@ -425,7 +430,7 @@ src/ai_session_handler/
   transcripts.py
 ```
 
-### Phase 2: Plan Parser
+### Phase 2: Plan Parser (Complete)
 
 - Implement `Phase` dataclass with `id`, `number`, `title`, `body`,
   `start_line`, and `end_line`.
@@ -436,7 +441,7 @@ src/ai_session_handler/
 - Add tests for normal phases, empty body, duplicate phases, no phases, and
   headings that should not match.
 
-### Phase 3: State Store
+### Phase 3: State Store (Complete)
 
 - Implement `RunnerState` dataclasses.
 - Read missing state as a new state.
@@ -449,7 +454,7 @@ src/ai_session_handler/
 - Add tests for new state, completed phase selection, all-complete, hash
   mismatch, retry-stopped, and accept-plan-change.
 
-### Phase 4: Prompt Builder
+### Phase 4: Prompt Builder (Complete)
 
 - Render a protocol-style worker prompt from a template in code.
 - Include selected phase body and previous state summary.
