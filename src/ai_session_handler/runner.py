@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -103,6 +104,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     """Run selected plan phases and persist state transitions."""
     if options.max_phases < 1:
         raise ValueError("max_phases must be at least 1")
+    _compile_stop_patterns(options.stop_on_regex)
 
     phases = parse_phase_file(options.plan_path)
     state = read_state(options.state_path)
@@ -198,7 +200,7 @@ def run_agent_process(
         transcript_file=transcript_file,
         state_file=state_file,
     )
-    stop_patterns = [re.compile(pattern) for pattern in stop_on_regex]
+    stop_patterns = _compile_stop_patterns(stop_on_regex)
     output_queue: Queue[_StreamItem] = Queue()
     combined_parts: list[str] = []
     process = subprocess.Popen(
@@ -230,16 +232,18 @@ def run_agent_process(
     for thread in threads:
         thread.start()
 
-    if process.stdin is not None:
-        try:
-            process.stdin.write(prompt_text)
-            process.stdin.close()
-        except BrokenPipeError:
-            pass
-
     timeout_at = (
         None if timeout_seconds is None else datetime.now(UTC).timestamp() + timeout_seconds
     )
+    stdin_thread: threading.Thread | None = None
+    if process.stdin is not None:
+        stdin_thread = threading.Thread(
+            target=_write_stdin,
+            args=(process.stdin, prompt_text),
+            daemon=True,
+        )
+        stdin_thread.start()
+
     stop_reason: StopReason | None = None
     stop_message: str | None = None
     stdout_target = sys.stdout if stdout is None else stdout
@@ -291,6 +295,8 @@ def run_agent_process(
 
         for thread in threads:
             thread.join(timeout=1)
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=1)
         _drain_output_queue(
             output_queue,
             transcript,
@@ -339,7 +345,12 @@ def render_command_template(
         "transcript_file": str(transcript_file),
         "state_file": str(state_file),
     }
-    command = shlex.split(template.format(**substitutions))
+    try:
+        template_args = shlex.split(template)
+    except ValueError as error:
+        raise CommandTemplateError(f"invalid command template quoting: {error}") from error
+
+    command = [argument.format(**substitutions) for argument in template_args]
     if not command:
         raise CommandTemplateError("agent command template produced an empty command")
     return command
@@ -474,6 +485,16 @@ def _read_stream(stream_name: str, stream: TextIO, output_queue: Queue[_StreamIt
         output_queue.put(_StreamItem(stream_name=stream_name, text=chunk))
 
 
+def _write_stdin(stream: TextIO, prompt_text: str) -> None:
+    try:
+        stream.write(prompt_text)
+    except (BrokenPipeError, OSError, ValueError):
+        return
+    finally:
+        with suppress(BrokenPipeError, OSError, ValueError):
+            stream.close()
+
+
 def _drain_output_queue(
     output_queue: Queue[_StreamItem],
     transcript: TextIO,
@@ -515,6 +536,16 @@ def _first_matching_pattern(
         if pattern.search(output) is not None:
             return pattern
     return None
+
+
+def _compile_stop_patterns(stop_on_regex: Sequence[str]) -> list[re.Pattern[str]]:
+    patterns: list[re.Pattern[str]] = []
+    for pattern in stop_on_regex:
+        try:
+            patterns.append(re.compile(pattern))
+        except re.error as error:
+            raise ValueError(f"invalid stop regex {pattern!r}: {error}") from error
+    return patterns
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:

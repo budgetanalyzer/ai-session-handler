@@ -11,6 +11,7 @@ from pytest import CaptureFixture
 
 from ai_session_handler import __version__
 from ai_session_handler.cli import main
+from ai_session_handler.runner import EXIT_INVALID
 
 
 def test_main_prints_version(capsys: CaptureFixture[str]) -> None:
@@ -59,6 +60,22 @@ def test_status_reports_next_phase(tmp_path: Path, capsys: CaptureFixture[str]) 
     assert exit_code == 0
     assert "next phase: phase-1 One" in captured.out
     assert "latest transcript: none" in captured.out
+
+
+def test_status_reports_malformed_state_json(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    state_dir = tmp_path / ".ai-session-handler"
+    state_dir.mkdir()
+    (state_dir / "plan.json").write_text("{", encoding="utf-8")
+
+    exit_code = main(["status", "--workspace", str(tmp_path), "--plan", "plan.md"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_INVALID
+    assert "invalid JSON" in captured.out
+    assert captured.err == ""
 
 
 def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:

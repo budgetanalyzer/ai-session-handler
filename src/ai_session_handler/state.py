@@ -115,7 +115,12 @@ def read_state(path: Path) -> RunnerState:
     if not path.exists():
         return RunnerState()
 
-    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise StateError(
+            f"{path}: invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
+        ) from error
     data = _expect_mapping(raw, source=str(path), key="$")
     schema_version = _int_at(data, "schema_version", source=str(path))
     if schema_version != SCHEMA_VERSION:

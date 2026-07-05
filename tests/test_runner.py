@@ -6,12 +6,15 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_BLOCKED,
     EXIT_NEEDS_CLARIFICATION,
     EXIT_OK,
     RunOptions,
+    render_command_template,
     run_phases,
 )
 from ai_session_handler.state import StopReason, read_state
@@ -95,6 +98,22 @@ def test_run_records_timeout(tmp_path: Path) -> None:
     assert outcome.state.stop.reason is StopReason.TIMEOUT
 
 
+def test_timeout_is_enforced_when_agent_does_not_read_large_stdin(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\n" + ("large body\n" * 200_000), encoding="utf-8")
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import time\nprint('agent started', flush=True)\ntime.sleep(5)\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script, timeout_seconds=0.1))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.TIMEOUT
+
+
 def test_run_records_stop_regex(tmp_path: Path) -> None:
     plan_path = _write_plan(tmp_path)
     script = _write_agent(
@@ -110,6 +129,69 @@ def test_run_records_stop_regex(tmp_path: Path) -> None:
     assert outcome.exit_code == EXIT_AGENT_FAILED
     assert outcome.state.stop is not None
     assert outcome.state.stop.reason is StopReason.STOP_REGEX
+
+
+def test_invalid_stop_regex_does_not_write_state(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(tmp_path, "agent.py", "print('unused')\n")
+    state_path = tmp_path / ".ai-session-handler" / "plan.json"
+
+    with pytest.raises(ValueError, match="invalid stop regex"):
+        run_phases(_options(tmp_path, plan_path, script, stop_on_regex=("[",)))
+
+    assert not state_path.exists()
+
+
+def test_render_command_template_preserves_placeholder_paths_with_spaces() -> None:
+    command = render_command_template(
+        "agent --prompt {prompt_file} --cwd={workspace} --run {run_id}",
+        prompt_file=Path("/tmp/my workspace/prompt file.txt"),
+        workspace=Path("/tmp/my workspace"),
+        run_id="run-1",
+        transcript_file=Path("/tmp/my workspace/transcript.txt"),
+        state_file=Path("/tmp/my workspace/state.json"),
+    )
+
+    assert command == [
+        "agent",
+        "--prompt",
+        "/tmp/my workspace/prompt file.txt",
+        "--cwd=/tmp/my workspace",
+        "--run",
+        "run-1",
+    ]
+
+
+def test_run_preserves_prompt_file_placeholder_with_workspace_spaces(tmp_path: Path) -> None:
+    workspace = tmp_path / "my workspace"
+    workspace.mkdir()
+    plan_path = _write_plan(workspace)
+    record_path = workspace / "argv.txt"
+    script = _write_agent(
+        workspace,
+        "agent.py",
+        "from pathlib import Path\n"
+        "import sys\n"
+        "Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')\n"
+        "print('<phase-complete>Read prompt path.</phase-complete>')\n",
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+    command += f"{shlex.quote(str(record_path))} {{prompt_file}}"
+
+    outcome = run_phases(
+        RunOptions(
+            workspace_path=workspace,
+            plan_path=plan_path,
+            state_path=workspace / ".ai-session-handler" / "plan.json",
+            agent_cmd=command,
+            timeout_seconds=5,
+        )
+    )
+
+    prompt_path = Path(record_path.read_text(encoding="utf-8"))
+    assert outcome.exit_code == EXIT_OK
+    assert prompt_path.exists()
+    assert prompt_path.parent == workspace / ".ai-session-handler" / "prompts"
 
 
 def test_run_handles_large_output_before_marker(tmp_path: Path) -> None:

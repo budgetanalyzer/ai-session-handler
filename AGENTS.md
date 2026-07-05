@@ -91,13 +91,15 @@ Use Ruff as the single formatting, linting, pyupgrade, and import-sorting path.
 Do not add Black, isort, Flake8, or autopep8 unless the user explicitly asks for
 that tool split.
 
-Expected commands:
+Expected commands in this workspace use the repository-local virtualenv. If
+`.venv/` is missing, create/install the dev environment first rather than
+falling back to global tooling.
 
 ```bash
-python -m ruff format .
-python -m ruff check . --fix
-python -m mypy src tests
-python -m pytest
+.venv/bin/python -m ruff format .
+.venv/bin/python -m ruff check . --fix
+.venv/bin/python -m mypy src tests
+.venv/bin/python -m pytest
 ```
 
 Recommended initial Ruff settings:
