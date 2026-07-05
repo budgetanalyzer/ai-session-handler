@@ -31,6 +31,18 @@ Keep changes scoped to the requested phase, workflow, or user request.
   checkout, reset, clean, stash, branch creation, or automatic worktree behavior.
 - Treat user clarification as a first-class stop state, not as failure.
 
+## Implemented CLI Workflow
+
+- Use `ai-session-handler init` to create `.ai-session-handler/config.json`,
+  `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
+- Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run the next
+  incomplete phase. The default `--max-phases` is `1`.
+- Use `ai-session-handler status --plan PATH` to inspect the next phase, stopped
+  phase, plan hash mismatch, and latest transcript.
+- Use `--retry-stopped` only after human intervention on a stopped phase.
+- Use `--accept-plan-change` only after verifying a plan edit should become the
+  new accepted plan identity.
+
 ## Python Baseline
 
 Use modern, explicit Python. The implementation should feel like a small typed

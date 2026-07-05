@@ -466,7 +466,7 @@ src/ai_session_handler/
 - Write the prompt to a per-run prompt file under `.ai-session-handler/prompts/`.
 - Add snapshot-style tests by comparing generated prompt text to fixture files.
 
-### Phase 5: Process Runner And Transcripts
+### Phase 5: Process Runner And Transcripts (Complete)
 
 - Create run ids with UTC timestamp plus phase id.
 - Substitute command placeholders.
@@ -478,7 +478,7 @@ src/ai_session_handler/
 - Add fake-agent integration tests for stdout marker, stderr marker, nonzero
   exit, timeout, stop regex, and large output.
 
-### Phase 6: Marker Handling And State Transitions
+### Phase 6: Marker Handling And State Transitions (Complete)
 
 - Parse exactly one of:
   - `<phase-complete>...</phase-complete>`
@@ -504,7 +504,7 @@ src/ai_session_handler/
   - record runner failure
   - exit `4`
 
-### Phase 7: CLI Polish And Documentation
+### Phase 7: CLI Polish And Documentation (Complete)
 
 - Implement `status` output for:
   - all complete

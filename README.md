@@ -11,11 +11,10 @@ agent CLI can be used through the same core process model.
 
 ## Status
 
-This repository is currently at Phase 4: prompt builder. The package,
-entrypoints, quality tooling, documentation baseline, markdown phase parsing,
-durable state primitives, and worker prompt rendering are in place; process
-runner behavior will be implemented in later phases from
-`docs/plans/provider-agnostic-task-runner.md`.
+The provider-agnostic task-runner plan is implemented. The package includes
+markdown phase parsing, durable state, worker prompt generation, subprocess
+execution with transcripts, terminal marker handling, and `run`, `status`, and
+`init` CLI commands.
 
 ## Install For Development
 
@@ -34,7 +33,7 @@ python -m ai_session_handler --help
 ai-session-handler --help
 ```
 
-## Planned Command Model
+## Command Model
 
 The core command shape is:
 
@@ -46,11 +45,11 @@ ai-session-handler run \
   --max-phases 1
 ```
 
-By default, the runner will execute exactly one phase and exit. Running multiple
-phases will require an explicit option such as `--max-phases N`.
+By default, the runner executes exactly one phase and exits. Running multiple
+phases requires an explicit option such as `--max-phases N`.
 
-`--agent-cmd` is a command template, not a shell script. The planned supported
-placeholders are:
+`--agent-cmd` is a command template, not a shell script. Supported placeholders
+are:
 
 - `{prompt_file}`
 - `{workspace}`
@@ -59,6 +58,87 @@ placeholders are:
 - `{state_file}`
 
 Provider-specific setup belongs in wrapper scripts, not in runner internals.
+
+The worker prompt is always written under `.ai-session-handler/prompts/` and is
+also piped to the agent process over stdin. Transcripts are written under
+`.ai-session-handler/transcripts/`.
+
+## Commands
+
+Create the optional example config and generated directories:
+
+```bash
+ai-session-handler init
+```
+
+Run the next incomplete phase:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "your-agent-command"
+```
+
+Print durable state and the latest transcript path:
+
+```bash
+ai-session-handler status --plan docs/plans/plan-22.md
+```
+
+If a phase stops as blocked or needing clarification, a later run refuses to
+continue by default. After human intervention, rerun that phase explicitly:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "your-agent-command" \
+  --retry-stopped
+```
+
+If the plan file changes, the runner refuses to continue until the change is
+accepted and completed phase ids are verified to still exist:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "your-agent-command" \
+  --accept-plan-change
+```
+
+## Provider Examples
+
+Codex can be invoked directly when its CLI reads work from stdin:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "codex exec"
+```
+
+Claude or another CLI can be used the same way if it accepts stdin:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "claude"
+```
+
+For provider-specific flags, shell setup, or file-based prompt ingestion, use a
+wrapper script and keep that behavior outside the runner:
+
+```bash
+ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
+```
+
+## Exit Codes
+
+- `0`: phase complete or all phases complete
+- `2`: phase blocked
+- `3`: phase needs clarification
+- `4`: agent process failed, timeout, stop regex, missing marker, or multiple markers
+- `5`: invalid plan, config, command template, or state
 
 ## Quality Gates
 
