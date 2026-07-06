@@ -57,11 +57,13 @@ The core command shape is:
 By default, the runner executes exactly one phase and exits. Running multiple
 phases requires an explicit option such as `--max-phases N`.
 
-`--agent-cmd` is a command template, not a shell script. The rendered command is
-executed inside the container with `cwd` set to `--workspace`, which defaults to
-the current directory. Use executables and wrapper scripts that are visible from
-that container workspace; if `--workspace` is not this repository, pass absolute
-container paths where needed. Supported placeholders are:
+`--agent-cmd` is a command template, not a shell script. The plan path determines
+the workspace: `run` and `status` walk up from `--plan` to the nearest
+`.ai-session-handler`, `.git`, or `AGENTS.md` marker. The rendered command runs
+inside that workspace, so a full path to a plan in another repository uses that
+repository's config, state, prompts, and transcripts by default. Use executables
+and wrapper scripts that are visible from that container workspace, or pass
+absolute container paths for shared tools. Supported placeholders are:
 
 - `{prompt_file}`
 - `{workspace}`
@@ -96,6 +98,13 @@ Run the next incomplete phase:
 .venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command"
+```
+
+Run against another repository by passing the full plan path:
+
+```bash
+.venv/bin/ai-session-handler run \
+  --plan /workspace/my-project/docs/plans/plan-22.md
 ```
 
 Print durable state and the latest transcript path:

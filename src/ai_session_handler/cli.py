@@ -77,12 +77,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_plan_state_flags(status_parser)
 
     init_parser = subparsers.add_parser("init", help="create example config and directories")
-    init_parser.add_argument(
-        "--workspace",
-        type=Path,
-        default=Path.cwd(),
-        help="container workspace root; defaults to the current directory",
-    )
     init_parser.add_argument("--config", type=Path, help="config path")
     return parser
 
@@ -110,17 +104,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _add_plan_state_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plan", type=Path, required=True, help="markdown plan path")
     parser.add_argument("--state", type=Path, help="runner state JSON path")
-    parser.add_argument(
-        "--workspace",
-        type=Path,
-        default=Path.cwd(),
-        help="container workspace root; defaults to the current directory",
-    )
     parser.add_argument("--config", type=Path, help="optional config JSON path")
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    workspace = args.workspace.resolve()
+    workspace = _infer_workspace_from_plan(args.plan)
     plan_path = _resolve_path(workspace, args.plan)
     state_path = _state_path(workspace, args.state, plan_path)
     config_path = _config_path(workspace, args.config)
@@ -167,7 +155,7 @@ def _run_command(args: argparse.Namespace) -> int:
 
 
 def _status_command(args: argparse.Namespace) -> int:
-    workspace = args.workspace.resolve()
+    workspace = _infer_workspace_from_plan(args.plan)
     plan_path = _resolve_path(workspace, args.plan)
     state_path = _state_path(workspace, args.state, plan_path)
 
@@ -208,7 +196,7 @@ def _status_command(args: argparse.Namespace) -> int:
 
 
 def _init_command(args: argparse.Namespace) -> int:
-    workspace = args.workspace.resolve()
+    workspace = Path.cwd().resolve()
     config_path = _config_path(workspace, args.config)
     try:
         write_example_config(config_path)
@@ -292,6 +280,23 @@ def _has_no_transcript_body(lines: Sequence[str]) -> bool:
     except ValueError:
         return False
     return all(line.strip() == "" for line in lines[header_end + 1 :])
+
+
+def _infer_workspace_from_plan(plan_path: Path) -> Path:
+    unresolved_plan = plan_path if plan_path.is_absolute() else Path.cwd() / plan_path
+    resolved_plan = unresolved_plan.resolve()
+    markers = (
+        Path(".ai-session-handler"),
+        Path(".git"),
+        Path("AGENTS.md"),
+    )
+    for parent in (resolved_plan.parent, *resolved_plan.parents):
+        if any((parent / marker).exists() for marker in markers):
+            return parent
+
+    if plan_path.is_absolute():
+        return resolved_plan.parent
+    return Path.cwd().resolve()
 
 
 def _resolve_path(workspace: Path, path: Path) -> Path:

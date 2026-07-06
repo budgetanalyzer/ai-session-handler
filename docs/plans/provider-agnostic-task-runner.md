@@ -171,8 +171,8 @@ Reference resources:
   - Optional placeholders in `--agent-cmd`: `{prompt_file}`, `{workspace}`,
     `{run_id}`, `{transcript_file}`, `{state_file}`.
 - The rendered agent command runs inside the container with `cwd` set to the
-  selected workspace. Wrapper scripts and executables must be visible in that
-  container workspace, or passed as absolute container paths.
+  workspace inferred from the plan path. Wrapper scripts and executables must be
+  visible in that container workspace, or passed as absolute container paths.
 - Do not implement provider adapters in v1. A user can wrap any provider CLI
   with a shell script if needed.
 - Do not perform git operations. The runner may report dirty state if useful,
@@ -352,10 +352,10 @@ language and name the failure modes explicitly.
   flags, capture the provider's final message, sanitize marker-like live output,
   and re-emit exactly one terminal marker without adding a `codex-high` mode to
   core runner logic.
-- Agent commands run inside the container with `cwd` set to `--workspace`, so
-  repo-relative commands only work when the selected workspace is the repo that
-  contains those commands. Use absolute container paths for shared tools when
-  running against another workspace.
+- Agent commands run inside the container with `cwd` set to the workspace
+  inferred from `--plan`, so repo-relative commands only work when that
+  workspace contains those commands. Use absolute container paths for shared
+  tools when running against another repository.
 - Generate a prompt file for every run, even when the prompt is also piped over
   stdin.
 - Default prompt delivery is stdin. `{prompt_file}` exists so wrappers or
@@ -410,7 +410,12 @@ argv: codex exec ...
   - `4`: agent process failed or no terminal marker found
   - `5`: invalid plan/config/state
 
-Config file should be optional. CLI flags override config values.
+Config file should be optional. CLI flags override config values. The plan path
+determines the workspace: `run` and `status` infer it by walking up from
+`--plan` to the nearest `.ai-session-handler`, `.git`, or `AGENTS.md` marker.
+This lets a full `--plan` path in another repository use that repository's
+config and state instead of the caller's current directory without a separate
+workspace selector.
 
 Suggested config:
 

@@ -21,10 +21,17 @@ Keep changes scoped to the requested phase, workflow, or user request.
 
 - AI sessions run in the container, not on the user's workstation. Setup,
   installed entrypoints, agent wrapper scripts, generated state, and transcripts
-  must be container-visible under `/workspace` or another explicit container
-  workspace path.
-- Keep v1 provider-agnostic. Invoke arbitrary command templates; do not add
-  Codex, Claude, OpenAI, Anthropic, or other provider adapters to core logic.
+  must be container-visible under `/workspace`.
+- Prefer the simplest straightforward solution with convention over
+  configuration. This project is not currently intended for broad distribution,
+  so avoid distribution-oriented knobs, compatibility layers, or YAGNI
+  flexibility unless the user explicitly asks for them.
+- The plan file determines the workspace. Do not add or restore a user-facing
+  `--workspace` selector; infer the workspace from `--plan` and keep generated
+  handler files under that workspace's `.ai-session-handler/` directory.
+- Keep the runner always provider-agnostic. Invoke arbitrary command templates;
+  do not add Codex, Claude, OpenAI, Anthropic, or other provider adapters to
+  core logic.
 - Run one phase by default. Multi-phase execution must require an explicit
   option such as `--max-phases N`.
 - Keep runtime dependencies empty for v1 unless the user explicitly accepts a
@@ -41,7 +48,8 @@ Keep changes scoped to the requested phase, workflow, or user request.
 - Use `.venv/bin/ai-session-handler init` to create `.ai-session-handler/config.json`,
   `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
 - Use `.venv/bin/ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run
-  the next incomplete phase. The default `--max-phases` is `1`.
+  the next incomplete phase. `PATH` determines the workspace; pass a full plan
+  path to run against another repository. The default `--max-phases` is `1`.
 - Use `.venv/bin/ai-session-handler status --plan PATH` to inspect the next
   phase, stopped phase, plan hash mismatch, and latest transcript.
 - Use `--retry-stopped` only after human intervention on a stopped phase.

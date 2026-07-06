@@ -7,11 +7,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pytest import CaptureFixture
+from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
 from ai_session_handler.cli import main
 from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_INVALID
+from ai_session_handler.state import read_state
 
 
 def test_main_prints_version(capsys: CaptureFixture[str]) -> None:
@@ -37,8 +38,14 @@ def test_python_module_entrypoint_prints_help() -> None:
     assert result.stderr == ""
 
 
-def test_init_creates_config_and_directories(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
-    exit_code = main(["init", "--workspace", str(tmp_path)])
+def test_init_creates_config_and_directories(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["init"])
 
     captured = capsys.readouterr()
 
@@ -49,11 +56,16 @@ def test_init_creates_config_and_directories(tmp_path: Path, capsys: CaptureFixt
     assert (tmp_path / ".ai-session-handler" / "transcripts").is_dir()
 
 
-def test_status_reports_next_phase(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+def test_status_reports_next_phase(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
-    exit_code = main(["status", "--workspace", str(tmp_path), "--plan", "plan.md"])
+    exit_code = main(["status", "--plan", "plan.md"])
 
     captured = capsys.readouterr()
 
@@ -62,14 +74,19 @@ def test_status_reports_next_phase(tmp_path: Path, capsys: CaptureFixture[str]) 
     assert "latest transcript: none" in captured.out
 
 
-def test_status_reports_malformed_state_json(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+def test_status_reports_malformed_state_json(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
     state_dir = tmp_path / ".ai-session-handler"
     state_dir.mkdir()
     (state_dir / "plan.json").write_text("{", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
-    exit_code = main(["status", "--workspace", str(tmp_path), "--plan", "plan.md"])
+    exit_code = main(["status", "--plan", "plan.md"])
 
     captured = capsys.readouterr()
 
@@ -80,18 +97,18 @@ def test_status_reports_malformed_state_json(tmp_path: Path, capsys: CaptureFixt
 
 def test_run_agent_failure_reports_error_details_to_stderr(
     tmp_path: Path,
+    monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     exit_code = main(
         [
             "run",
-            "--workspace",
-            str(tmp_path),
             "--plan",
             "plan.md",
             "--agent-cmd",
@@ -112,6 +129,7 @@ def test_run_agent_failure_reports_error_details_to_stderr(
 
 def test_run_stopped_agent_failure_reports_transcript_tail(
     tmp_path: Path,
+    monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
@@ -125,12 +143,11 @@ def test_run_stopped_agent_failure_reports_transcript_tail(
         encoding="utf-8",
     )
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}"
+    monkeypatch.chdir(tmp_path)
 
     first_exit_code = main(
         [
             "run",
-            "--workspace",
-            str(tmp_path),
             "--plan",
             "plan.md",
             "--agent-cmd",
@@ -142,8 +159,6 @@ def test_run_stopped_agent_failure_reports_transcript_tail(
     second_exit_code = main(
         [
             "run",
-            "--workspace",
-            str(tmp_path),
             "--plan",
             "plan.md",
             "--agent-cmd",
@@ -183,8 +198,6 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
             "-m",
             "ai_session_handler",
             "run",
-            "--workspace",
-            str(tmp_path),
             "--plan",
             "plan.md",
             "--agent-cmd",
@@ -192,9 +205,53 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
         ],
         check=False,
         capture_output=True,
+        cwd=tmp_path,
         text=True,
     )
 
     assert result.returncode == 0
     assert "phase-complete: phase-1" in result.stdout
     assert (tmp_path / ".ai-session-handler" / "plan.json").exists()
+
+
+def test_run_infers_workspace_from_absolute_plan_path(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "target-repo"
+    other_cwd = tmp_path / "handler-repo"
+    plan_path = workspace / "docs" / "plans" / "plan.md"
+    state_path = workspace / ".ai-session-handler" / "plan.json"
+    agent_path = workspace / "agent.py"
+    config_path = workspace / ".ai-session-handler" / "config.json"
+
+    plan_path.parent.mkdir(parents=True)
+    config_path.parent.mkdir(parents=True)
+    other_cwd.mkdir()
+    plan_path.write_text(
+        "## Phase 1: One\nBody\n\n## Phase 2: Two\nBody\n",
+        encoding="utf-8",
+    )
+    agent_path.write_text(
+        "import sys\n"
+        "prompt = sys.stdin.read()\n"
+        f"assert 'workspace_path: {workspace}' in prompt\n"
+        "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "{\n"
+        f'  "agent_cmd": "{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",\n'
+        '  "max_phases": 2,\n'
+        '  "timeout_seconds": 3600,\n'
+        '  "stop_on_regex": []\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(other_cwd)
+
+    exit_code = main(["run", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    assert state_path.exists()
+    assert read_state(state_path).completed_phase_ids == ("phase-1", "phase-2")
