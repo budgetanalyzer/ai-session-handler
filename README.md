@@ -49,7 +49,6 @@ The core command shape is:
 ```bash
 .venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
-  --state .ai-session-handler/plan-22.json \
   --agent-cmd "your-agent-command-here" \
   --max-phases 1
 ```
@@ -64,6 +63,10 @@ inside that workspace, so a full path to a plan in another repository uses that
 repository's config, state, prompts, and transcripts by default. Use executables
 and wrapper scripts that are visible from that container workspace, or pass
 absolute container paths for shared tools. Supported placeholders are:
+
+Config is always read from `.ai-session-handler/config.json` in the inferred
+workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
+in that same workspace.
 
 - `{prompt_file}`
 - `{workspace}`
@@ -162,19 +165,20 @@ wrapper script and keep that behavior outside the runner:
 ```
 
 For Codex high-reasoning runs, use the container-local wrapper script when it is
-available in the target workspace:
+available from this repository's virtualenv:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
-  --agent-cmd "/workspace/my-project/.ai-session-handler/codex-high-exec-filter.py"
+  --plan /workspace/my-project/docs/plans/plan-22.md \
+  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high"
 ```
 
-That wrapper is intentionally outside runner internals. It sets Codex's
-high-reasoning mode, runs Codex with non-colored exec output, captures the final
-message, sanitizes marker-like text from live stdout/stderr, and re-emits the
-single terminal marker from the final message. This keeps the core runner
-provider-agnostic while preserving the runner's exactly-one-marker contract.
+That wrapper is shipped by this project but remains outside runner internals. It
+sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output,
+captures the final message, sanitizes marker-like text from live stdout/stderr,
+and re-emits the single terminal marker from the final message. This keeps the
+core runner provider-agnostic while preserving the runner's exactly-one-marker
+contract.
 
 ## Exit Codes
 

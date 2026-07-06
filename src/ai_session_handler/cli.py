@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="run selected plan phase(s)")
-    _add_plan_state_flags(run_parser)
+    _add_plan_flag(run_parser)
     run_parser.add_argument("--agent-cmd", help="agent command template")
     run_parser.add_argument("--max-phases", type=int, help="maximum phases to run")
     run_parser.add_argument("--timeout", type=float, help="agent timeout in seconds")
@@ -74,10 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     status_parser = subparsers.add_parser("status", help="print current runner state")
-    _add_plan_state_flags(status_parser)
+    _add_plan_flag(status_parser)
 
-    init_parser = subparsers.add_parser("init", help="create example config and directories")
-    init_parser.add_argument("--config", type=Path, help="config path")
+    subparsers.add_parser("init", help="create example config and directories")
     return parser
 
 
@@ -101,17 +100,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _add_plan_state_flags(parser: argparse.ArgumentParser) -> None:
+def _add_plan_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plan", type=Path, required=True, help="markdown plan path")
-    parser.add_argument("--state", type=Path, help="runner state JSON path")
-    parser.add_argument("--config", type=Path, help="optional config JSON path")
 
 
 def _run_command(args: argparse.Namespace) -> int:
     workspace = _infer_workspace_from_plan(args.plan)
     plan_path = _resolve_path(workspace, args.plan)
-    state_path = _state_path(workspace, args.state, plan_path)
-    config_path = _config_path(workspace, args.config)
+    state_path = default_state_path(workspace, plan_path)
+    config_path = default_config_path(workspace)
 
     try:
         config = read_config(config_path)
@@ -157,7 +154,7 @@ def _run_command(args: argparse.Namespace) -> int:
 def _status_command(args: argparse.Namespace) -> int:
     workspace = _infer_workspace_from_plan(args.plan)
     plan_path = _resolve_path(workspace, args.plan)
-    state_path = _state_path(workspace, args.state, plan_path)
+    state_path = default_state_path(workspace, plan_path)
 
     try:
         phases = parse_phase_file(plan_path)
@@ -197,7 +194,7 @@ def _status_command(args: argparse.Namespace) -> int:
 
 def _init_command(args: argparse.Namespace) -> int:
     workspace = Path.cwd().resolve()
-    config_path = _config_path(workspace, args.config)
+    config_path = default_config_path(workspace)
     try:
         write_example_config(config_path)
     except (ConfigError, OSError) as error:
@@ -301,15 +298,3 @@ def _infer_workspace_from_plan(plan_path: Path) -> Path:
 
 def _resolve_path(workspace: Path, path: Path) -> Path:
     return path if path.is_absolute() else workspace / path
-
-
-def _config_path(workspace: Path, path: Path | None) -> Path:
-    return _resolve_path(workspace, path) if path is not None else default_config_path(workspace)
-
-
-def _state_path(workspace: Path, path: Path | None, plan_path: Path) -> Path:
-    return (
-        _resolve_path(workspace, path)
-        if path is not None
-        else default_state_path(workspace, plan_path)
-    )

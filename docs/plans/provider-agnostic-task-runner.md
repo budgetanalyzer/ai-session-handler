@@ -160,7 +160,6 @@ Reference resources:
 ```bash
 .venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
-  --state .ai-session-handler/plan-22.json \
   --agent-cmd "your-agent-command-here" \
   --max-phases 1
 ```
@@ -348,10 +347,12 @@ language and name the failure modes explicitly.
   bootstrapping, or provider-specific flags, put that logic in a wrapper script
   and pass the wrapper as `--agent-cmd`.
 - Provider wrappers are the formal extension point for provider-specific
-  behavior. A Codex high-reasoning wrapper can set Codex-specific environment or
-  flags, capture the provider's final message, sanitize marker-like live output,
-  and re-emit exactly one terminal marker without adding a `codex-high` mode to
-  core runner logic.
+  behavior. Reusable wrappers can be shipped by this project as console scripts,
+  while target-specific wrappers can still live in the target workspace. A Codex
+  high-reasoning wrapper can set Codex-specific environment or flags, capture
+  the provider's final message, sanitize marker-like live output, and re-emit
+  exactly one terminal marker without adding a `codex-high` mode to core runner
+  logic.
 - Agent commands run inside the container with `cwd` set to the workspace
   inferred from `--plan`, so repo-relative commands only work when that
   workspace contains those commands. Use absolute container paths for shared
@@ -410,12 +411,15 @@ argv: codex exec ...
   - `4`: agent process failed or no terminal marker found
   - `5`: invalid plan/config/state
 
-Config file should be optional. CLI flags override config values. The plan path
-determines the workspace: `run` and `status` infer it by walking up from
-`--plan` to the nearest `.ai-session-handler`, `.git`, or `AGENTS.md` marker.
-This lets a full `--plan` path in another repository use that repository's
-config and state instead of the caller's current directory without a separate
-workspace selector.
+Config file should be optional and live at `.ai-session-handler/config.json` in
+the workspace inferred from `--plan`. Runner state should live at
+`.ai-session-handler/<plan-stem>.json` in the same workspace. Supported run
+flags override config values, but config and state paths are conventions rather
+than CLI options. The plan path determines the workspace: `run` and `status`
+infer it by walking up from `--plan` to the nearest `.ai-session-handler`,
+`.git`, or `AGENTS.md` marker. This lets a full `--plan` path in another
+repository use that repository's config and state instead of the caller's
+current directory without a separate workspace selector.
 
 Suggested config:
 

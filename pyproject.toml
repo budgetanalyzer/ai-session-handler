@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 ai-session-handler = "ai_session_handler.cli:main"
+ai-session-handler-codex-high = "ai_session_handler.provider_wrappers.codex_high_exec_filter:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

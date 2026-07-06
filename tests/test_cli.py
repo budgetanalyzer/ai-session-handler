@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
@@ -54,6 +55,28 @@ def test_init_creates_config_and_directories(
     assert (tmp_path / ".ai-session-handler" / "config.json").exists()
     assert (tmp_path / ".ai-session-handler" / "prompts").is_dir()
     assert (tmp_path / ".ai-session-handler" / "transcripts").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("argv", "option"),
+    [
+        (["init", "--config", "custom.json"], "--config"),
+        (["status", "--plan", "plan.md", "--state", "custom.json"], "--state"),
+        (["run", "--plan", "plan.md", "--config", "custom.json"], "--config"),
+    ],
+)
+def test_removed_path_options_are_rejected(
+    argv: list[str],
+    option: str,
+    capsys: CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(argv)
+
+    captured = capsys.readouterr()
+
+    assert error.value.code == 2
+    assert f"unrecognized arguments: {option}" in captured.err
 
 
 def test_status_reports_next_phase(
