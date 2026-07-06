@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Final, TextIO
 
 from ai_session_handler import __version__
 from ai_session_handler.config import (
@@ -16,8 +19,10 @@ from ai_session_handler.config import (
 )
 from ai_session_handler.phases import PlanParseError, parse_phase_file
 from ai_session_handler.runner import (
+    EXIT_AGENT_FAILED,
     EXIT_INVALID,
     CommandTemplateError,
+    RunnerOutcome,
     RunOptions,
     run_phases,
 )
@@ -29,6 +34,8 @@ from ai_session_handler.state import (
     read_state,
     select_next_phase,
 )
+
+_TRANSCRIPT_TAIL_LINES: Final[int] = 40
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=Path,
         default=Path.cwd(),
-        help="workspace root; defaults to the current directory",
+        help="container workspace root; defaults to the current directory",
     )
     init_parser.add_argument("--config", type=Path, help="config path")
     return parser
@@ -107,7 +114,7 @@ def _add_plan_state_flags(parser: argparse.ArgumentParser) -> None:
         "--workspace",
         type=Path,
         default=Path.cwd(),
-        help="workspace root; defaults to the current directory",
+        help="container workspace root; defaults to the current directory",
     )
     parser.add_argument("--config", type=Path, help="optional config JSON path")
 
@@ -122,7 +129,7 @@ def _run_command(args: argparse.Namespace) -> int:
         config = read_config(config_path)
         agent_cmd = args.agent_cmd or config.agent_cmd
         if agent_cmd is None:
-            print("error: --agent-cmd is required when config does not provide agent_cmd")
+            _print_error("--agent-cmd is required when config does not provide agent_cmd")
             return EXIT_INVALID
 
         stop_on_regex = tuple(config.stop_on_regex) + tuple(args.stop_on_regex)
@@ -141,6 +148,9 @@ def _run_command(args: argparse.Namespace) -> int:
                 accept_plan_change=args.accept_plan_change,
             )
         )
+    except StoppedStateError as error:
+        _print_stopped_state_error(error, state_path, workspace)
+        return EXIT_INVALID
     except (
         CommandTemplateError,
         ConfigError,
@@ -149,10 +159,10 @@ def _run_command(args: argparse.Namespace) -> int:
         StateError,
         ValueError,
     ) as error:
-        print(f"error: {error}")
+        _print_error(str(error))
         return EXIT_INVALID
 
-    print(outcome.message)
+    _print_run_outcome(outcome)
     return outcome.exit_code
 
 
@@ -166,12 +176,12 @@ def _status_command(args: argparse.Namespace) -> int:
         state = read_state(state_path)
         ensure_plan_hash_matches(state, plan_path, phases)
     except PlanHashMismatchError as error:
-        print(f"plan hash mismatch: {error.plan_path}")
-        print(f"expected: {error.expected_sha256}")
-        print(f"actual:   {error.actual_sha256}")
+        print(f"plan hash mismatch: {error.plan_path}", file=sys.stderr)
+        print(f"expected: {error.expected_sha256}", file=sys.stderr)
+        print(f"actual:   {error.actual_sha256}", file=sys.stderr)
         return EXIT_INVALID
     except (OSError, PlanParseError, StateError) as error:
-        print(f"error: {error}")
+        _print_error(str(error))
         return EXIT_INVALID
 
     if state.stop is not None:
@@ -203,10 +213,85 @@ def _init_command(args: argparse.Namespace) -> int:
     try:
         write_example_config(config_path)
     except (ConfigError, OSError) as error:
-        print(f"error: {error}")
+        _print_error(str(error))
         return EXIT_INVALID
     print(f"created {config_path}")
     return 0
+
+
+def _print_error(message: str) -> None:
+    print(f"error: {message}", file=sys.stderr)
+
+
+def _print_stopped_state_error(
+    error: StoppedStateError,
+    state_path: Path,
+    workspace: Path,
+) -> None:
+    _print_error(str(error))
+    if error.stop.clarification_request is not None:
+        print(f"clarification: {error.stop.clarification_request}", file=sys.stderr)
+    if error.stop.message is not None:
+        print(f"message: {error.stop.message}", file=sys.stderr)
+    print(f"agent cwd: {workspace}", file=sys.stderr)
+
+    try:
+        state = read_state(state_path)
+    except (OSError, StateError) as detail_error:
+        print(f"latest run details unavailable: {detail_error}", file=sys.stderr)
+        return
+
+    if state.last_run is None:
+        return
+
+    print(f"last run: {state.last_run.run_id} ({state.last_run.status})", file=sys.stderr)
+    print(f"transcript: {state.last_run.transcript_path}", file=sys.stderr)
+    _print_transcript_tail(Path(state.last_run.transcript_path), sys.stderr)
+
+
+def _print_run_outcome(outcome: RunnerOutcome) -> None:
+    if outcome.exit_code != EXIT_AGENT_FAILED:
+        print(outcome.message)
+        return
+
+    print(outcome.message, file=sys.stderr)
+    if outcome.state.last_run is not None:
+        print(f"transcript: {outcome.state.last_run.transcript_path}", file=sys.stderr)
+        _print_transcript_tail(Path(outcome.state.last_run.transcript_path), sys.stderr)
+
+
+def _print_transcript_tail(path: Path, stream: TextIO) -> None:
+    lines = _read_transcript_tail(path, max_lines=_TRANSCRIPT_TAIL_LINES)
+    if not lines:
+        return
+
+    print(f"transcript tail (last {len(lines)} lines):", file=stream)
+    for line in lines:
+        stream.write(line)
+        if not line.endswith("\n"):
+            stream.write("\n")
+    if _has_no_transcript_body(lines):
+        print(
+            "transcript has no captured stdout/stderr; check the agent command, cwd, "
+            "and wrapper logging.",
+            file=stream,
+        )
+
+
+def _read_transcript_tail(path: Path, *, max_lines: int) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as transcript:
+            return list(deque(transcript, maxlen=max_lines))
+    except OSError as error:
+        return [f"unable to read transcript tail: {error}\n"]
+
+
+def _has_no_transcript_body(lines: Sequence[str]) -> bool:
+    try:
+        header_end = lines.index("---\n")
+    except ValueError:
+        return False
+    return all(line.strip() == "" for line in lines[header_end + 1 :])
 
 
 def _resolve_path(workspace: Path, path: Path) -> Path:

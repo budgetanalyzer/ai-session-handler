@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,8 +17,10 @@ class TranscriptHeader:
     phase_title: str
     plan_path: Path
     state_path: Path
+    workspace_path: Path
     started_at: str
     agent_cmd: str
+    rendered_command: Sequence[str]
 
 
 def transcript_path(generated_dir: Path, run_id: str) -> Path:
@@ -31,7 +35,9 @@ def render_transcript_header(header: TranscriptHeader) -> str:
         f"phase: {header.phase_id} {header.phase_title}\n"
         f"plan: {header.plan_path}\n"
         f"state: {header.state_path}\n"
+        f"workspace: {header.workspace_path}\n"
         f"started_at: {header.started_at}\n"
         f"agent_cmd: {header.agent_cmd}\n"
+        f"argv: {shlex.join(header.rendered_command)}\n"
         "---\n"
     )

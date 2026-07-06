@@ -46,6 +46,20 @@ def test_parse_normal_phases_preserves_body_and_lines() -> None:
     ]
 
 
+def test_parse_phase_headings_at_any_markdown_level() -> None:
+    markdown = (
+        "# Phase 1: One\nOne body\n### Phase 2: Two\nTwo body\n###### Phase 3: Three\nThree body\n"
+    )
+
+    phases = parse_phases(markdown, source="plan.md")
+
+    assert [(phase.id, phase.title, phase.body) for phase in phases] == [
+        ("phase-1", "One", "One body\n"),
+        ("phase-2", "Two", "Two body\n"),
+        ("phase-3", "Three", "Three body\n"),
+    ]
+
+
 def test_parse_phase_with_empty_body() -> None:
     phases = parse_phases("## Phase 1: Empty\n## Phase 2: Next\nBody", source="plan.md")
 
@@ -76,7 +90,6 @@ def test_no_phases_is_rejected() -> None:
 @pytest.mark.parametrize(
     "heading",
     [
-        "### Phase 1: Too Deep",
         "## phase 1: Lowercase",
         "## Phase 1 Missing Colon",
         "## Phase 1: ",

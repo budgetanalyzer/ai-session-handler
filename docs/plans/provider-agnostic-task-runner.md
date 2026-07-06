@@ -4,10 +4,11 @@
 
 ## Summary
 
-Build a new small repo for a local task runner whose only job is to execute one
-fine-grained plan phase in a fresh agent session, record durable status, and
-stop. It should stay provider-agnostic by invoking an arbitrary command template
-rather than hardcoding Codex, Claude, or any other harness.
+Build a new small repo for a container-local task runner whose only job is to
+execute one fine-grained plan phase in a fresh agent session inside the AI
+workspace container, record durable status, and stop. It should stay
+provider-agnostic by invoking an arbitrary command template rather than
+hardcoding Codex, Claude, or any other harness.
 
 Default behavior: run exactly one phase, then exit for human review. Multi-phase
 looping can exist behind an explicit `--max-phases N`, but the default remains
@@ -16,9 +17,11 @@ looping can exist behind an explicit `--max-phases N`, but the default remains
 ## Language Decision
 
 Use Python for v1, but treat that as a pragmatic implementation choice, not an
-architectural commitment.
+architectural commitment. The Python environment, installed entrypoints, agent
+commands, state, and transcripts are container-local; this tool is not intended
+to be installed or run from the user's workstation.
 
-The runner's job is mostly local orchestration:
+The runner's job is mostly container-local orchestration:
 
 - parse markdown headings
 - read and write JSON state
@@ -50,7 +53,7 @@ Decision criteria:
 | Small auditable repo | Strong | Moderate |
 | Standard-library subprocess/file glue | Strong | Strong |
 | Static type guarantees | Moderate with type hints | Strong |
-| Packaging simplicity for local use | Strong | Moderate |
+| Packaging simplicity for container-local use | Strong | Moderate |
 | Maintainer fluency | Moderate | Strong |
 | Fits existing service ecosystem | Moderate | Strong |
 | Fast iteration with agents | Strong | Moderate |
@@ -87,10 +90,12 @@ Rationale:
 Suggested commands:
 
 ```bash
-python -m ruff format .
-python -m ruff check . --fix
-python -m mypy src tests
-python -m pytest
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m ruff format .
+.venv/bin/python -m ruff check . --fix
+.venv/bin/python -m mypy src tests
+.venv/bin/python -m pytest
 ```
 
 Suggested `pyproject.toml` baseline:
@@ -153,7 +158,7 @@ Reference resources:
 - Core command shape:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --state .ai-session-handler/plan-22.json \
   --agent-cmd "your-agent-command-here" \
@@ -165,6 +170,9 @@ ai-session-handler run \
   - Default: pipe prompt to the agent process over stdin.
   - Optional placeholders in `--agent-cmd`: `{prompt_file}`, `{workspace}`,
     `{run_id}`, `{transcript_file}`, `{state_file}`.
+- The rendered agent command runs inside the container with `cwd` set to the
+  selected workspace. Wrapper scripts and executables must be visible in that
+  container workspace, or passed as absolute container paths.
 - Do not implement provider adapters in v1. A user can wrap any provider CLI
   with a shell script if needed.
 - Do not perform git operations. The runner may report dirty state if useful,
@@ -339,12 +347,28 @@ language and name the failure modes explicitly.
 - If a provider requires shell features, command substitution, environment
   bootstrapping, or provider-specific flags, put that logic in a wrapper script
   and pass the wrapper as `--agent-cmd`.
+- Provider wrappers are the formal extension point for provider-specific
+  behavior. A Codex high-reasoning wrapper can set Codex-specific environment or
+  flags, capture the provider's final message, sanitize marker-like live output,
+  and re-emit exactly one terminal marker without adding a `codex-high` mode to
+  core runner logic.
+- Agent commands run inside the container with `cwd` set to `--workspace`, so
+  repo-relative commands only work when the selected workspace is the repo that
+  contains those commands. Use absolute container paths for shared tools when
+  running against another workspace.
 - Generate a prompt file for every run, even when the prompt is also piped over
   stdin.
 - Default prompt delivery is stdin. `{prompt_file}` exists so wrappers or
   provider CLIs can choose file-based ingestion without changing runner logic.
 - Stream stdout/stderr to the console while also writing a transcript. Do not
   wait until process exit to reveal output.
+- Print runner-owned errors and failed agent outcomes to stderr. Include the
+  transcript path and recent transcript output for failed agent outcomes so
+  users can inspect captured stdout/stderr after terse process failures.
+- Include the agent working directory and rendered argv in transcript headers.
+  If the process exits without stdout or stderr, record a runner diagnostic in
+  the transcript so silent command failures are distinguishable from missing
+  tail output.
 - Parse markers from the combined captured output. Exactly one recognized marker
   must appear. Zero or multiple markers are runner failures.
 - On timeout, terminate the process, wait a short grace period, then kill it if
@@ -360,8 +384,10 @@ run_id: 20260705T120102Z-phase-2
 phase: phase-2 Implement state store
 plan: docs/plans/plan-22.md
 state: .ai-session-handler/plan-22.json
+workspace: /repo
 started_at: 2026-07-05T12:01:02Z
 agent_cmd: codex exec ...
+argv: codex exec ...
 ---
 ```
 
@@ -373,6 +399,8 @@ agent_cmd: codex exec ...
 - `init`: create `.ai-session-handler/config.json` with example values.
 - `run --retry-stopped`: rerun the currently stopped phase after human
   intervention.
+- `run` without `--retry-stopped` on a stopped phase: print the stored stop
+  message, latest transcript path, and recent transcript output when available.
 - `run --accept-plan-change`: update the stored plan hash after verifying that
   completed phase ids still exist.
 - Exit codes:
@@ -525,10 +553,10 @@ src/ai_session_handler/
 ## Test Plan
 
 - Quality gates:
-  - `python -m ruff format .`
-  - `python -m ruff check . --fix`
-  - `python -m mypy src tests`
-  - `python -m pytest`
+  - `.venv/bin/python -m ruff format .`
+  - `.venv/bin/python -m ruff check . --fix`
+  - `.venv/bin/python -m mypy src tests`
+  - `.venv/bin/python -m pytest`
 - Unit test phase parsing from markdown headings.
 - Unit test state read/write and plan hash mismatch detection.
 - Unit test marker parsing for complete, blocked, clarification, missing marker,
@@ -565,6 +593,8 @@ src/ai_session_handler/
 ## Assumptions
 
 - New repo is preferred over adding this to an existing repo.
+- The runner and every AI session it launches run in the AI workspace
+  container, not on the user's workstation.
 - Default mode is one phase then stop.
 - Provider integration is by command template, not built-in adapters.
 - v1 does not solve generic task management, dependency graphs, parallelism,

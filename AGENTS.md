@@ -2,9 +2,10 @@
 
 ## Repository Purpose
 
-This repository implements a local, provider-agnostic task runner for short AI
-agent sessions. Its job is to run one fine-grained plan phase in a fresh agent
-process, record durable state and transcripts, and stop for human review.
+This repository implements a container-local, provider-agnostic task runner for
+short AI agent sessions. Its job is to run one fine-grained plan phase in a
+fresh agent process inside the AI workspace container, record durable state and
+transcripts, and stop for human review.
 
 ## Session Initialization
 
@@ -18,6 +19,10 @@ Keep changes scoped to the requested phase, workflow, or user request.
 
 ## Core Product Constraints
 
+- AI sessions run in the container, not on the user's workstation. Setup,
+  installed entrypoints, agent wrapper scripts, generated state, and transcripts
+  must be container-visible under `/workspace` or another explicit container
+  workspace path.
 - Keep v1 provider-agnostic. Invoke arbitrary command templates; do not add
   Codex, Claude, OpenAI, Anthropic, or other provider adapters to core logic.
 - Run one phase by default. Multi-phase execution must require an explicit
@@ -33,12 +38,12 @@ Keep changes scoped to the requested phase, workflow, or user request.
 
 ## Implemented CLI Workflow
 
-- Use `ai-session-handler init` to create `.ai-session-handler/config.json`,
+- Use `.venv/bin/ai-session-handler init` to create `.ai-session-handler/config.json`,
   `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
-- Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run the next
-  incomplete phase. The default `--max-phases` is `1`.
-- Use `ai-session-handler status --plan PATH` to inspect the next phase, stopped
-  phase, plan hash mismatch, and latest transcript.
+- Use `.venv/bin/ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run
+  the next incomplete phase. The default `--max-phases` is `1`.
+- Use `.venv/bin/ai-session-handler status --plan PATH` to inspect the next
+  phase, stopped phase, plan hash mismatch, and latest transcript.
 - Use `--retry-stopped` only after human intervention on a stopped phase.
 - Use `--accept-plan-change` only after verifying a plan edit should become the
   new accepted plan identity.
@@ -93,7 +98,14 @@ that tool split.
 
 Expected commands in this workspace use the repository-local virtualenv. If
 `.venv/` is missing, create/install the dev environment first rather than
-falling back to global tooling.
+falling back to global tooling. The virtualenv is container-owned for this
+project; install the package and development tools in editable mode inside the
+container:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+```
 
 ```bash
 .venv/bin/python -m ruff format .
@@ -140,6 +152,12 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Split substituted commands with `shlex.split`.
 - Execute with `shell=False`.
 - Put provider-specific shell setup in wrapper scripts, not runner internals.
+- Treat optional provider wrappers, such as a Codex high-reasoning wrapper, as
+  container-visible scripts invoked through `--agent-cmd`. Do not add a core
+  `codex-high` mode or other provider adapter to the runner.
+- Provider wrappers should accept the worker prompt on stdin, preserve useful
+  stdout/stderr for transcripts, return the provider process exit code, and
+  preserve the exactly-one-terminal-marker contract expected by the runner.
 - Stream stdout and stderr while also writing transcripts.
 - Parse terminal markers from combined captured output after process completion
   or controlled stop.
@@ -202,8 +220,8 @@ practice:
   import modes that avoid path surprises.
 - `uv` is commonly seen in modern Python workflows, but do not make it required
   for this repo unless the project intentionally adopts it. Maintain a standard
-  `python -m pip install -e ".[dev]"` workflow unless a package-manager decision
-  is documented.
+  `.venv/bin/python -m pip install -e ".[dev]"` workflow inside the container
+  unless a package-manager decision is documented.
 
 Reference sources for future checks: Python Packaging User Guide, PEP 8, PEP
 257, Ruff documentation, mypy documentation, and pytest good integration

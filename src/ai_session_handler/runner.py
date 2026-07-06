@@ -255,8 +255,10 @@ def run_agent_process(
         phase_title=phase.title,
         plan_path=plan_path,
         state_path=state_file,
+        workspace_path=workspace_path,
         started_at=started_at,
         agent_cmd=agent_cmd,
+        rendered_command=command,
     )
     with transcript_file.open("w", encoding="utf-8") as transcript:
         transcript.write(render_transcript_header(header))
@@ -304,6 +306,11 @@ def run_agent_process(
             stdout_target,
             stderr_target,
         )
+        if not combined_parts:
+            exit_code = process.returncode if process.returncode is not None else -1
+            transcript.write(
+                f"[runner] process exited with code {exit_code} without stdout/stderr output\n"
+            )
 
     finished_at = format_utc_timestamp()
     return ProcessResult(

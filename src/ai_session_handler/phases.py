@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-PHASE_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^## Phase ([0-9]+): (.+)$")
+PHASE_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#+ Phase ([0-9]+): (.+)$")
 
 
 @dataclass(frozen=True, slots=True)

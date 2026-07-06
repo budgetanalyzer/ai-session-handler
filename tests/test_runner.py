@@ -85,6 +85,11 @@ def test_run_records_nonzero_process_failure(tmp_path: Path) -> None:
     assert outcome.state.stop is not None
     assert outcome.state.stop.reason is StopReason.AGENT_FAILED
     assert outcome.state.stop.message == "agent command exited with code 7"
+    assert outcome.state.last_run is not None
+    transcript = Path(outcome.state.last_run.transcript_path).read_text(encoding="utf-8")
+    assert f"workspace: {tmp_path}" in transcript
+    assert "argv:" in transcript
+    assert "[runner] process exited with code 7 without stdout/stderr output" in transcript
 
 
 def test_run_records_timeout(tmp_path: Path) -> None:
