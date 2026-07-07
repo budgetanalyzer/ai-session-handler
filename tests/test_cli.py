@@ -12,7 +12,7 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
 from ai_session_handler.cli import main
-from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_INVALID
+from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVALID
 from ai_session_handler.state import read_state
 
 
@@ -148,6 +148,41 @@ def test_run_agent_failure_reports_error_details_to_stderr(
     assert f"workspace: {tmp_path}" in captured.err
     assert f"argv: {shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}" in captured.err
     assert "[runner] process exited with code 7 without stdout/stderr output" in captured.err
+
+
+def test_run_streams_progress_and_prints_terminal_summary_once(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "print('working...')\n"
+        "print('<phase-blocked>Need Auth0 env.\\nSet AUTH0_MGMT_DOMAIN.</phase-blocked>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == EXIT_BLOCKED
+    assert "working..." in captured.out
+    assert "<phase-blocked>" not in captured.out
+    assert "</phase-blocked>" not in captured.out
+    assert captured.out.count("Need Auth0 env.") == 1
+    assert captured.out.count("Set AUTH0_MGMT_DOMAIN.") == 1
 
 
 def test_run_stopped_agent_failure_reports_transcript_tail(

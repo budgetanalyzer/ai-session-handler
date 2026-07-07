@@ -81,11 +81,13 @@ also piped to the agent process over stdin. Transcripts are written under
 `.ai-session-handler/transcripts/`.
 
 The runner streams child stdout and stderr to the same streams while also
-capturing both in the transcript. Runner-owned errors, including invalid inputs
-and failed agent outcomes, are printed to stderr. Failed agent outcomes also
-print the transcript path and recent transcript output for debugging. Transcript
-headers include the agent working directory and rendered argv; if a process
-exits without stdout or stderr, the transcript records that explicitly.
+capturing both in the transcript. Terminal marker blocks are captured for
+parsing but hidden from the live console; the CLI prints the final phase result
+once after state is updated. Runner-owned errors, including invalid inputs and
+failed agent outcomes, are printed to stderr. Failed agent outcomes also print
+the transcript path and recent transcript output for debugging. Transcript
+headers include the agent working directory and rendered argv; if a process exits
+without stdout or stderr, the transcript records that explicitly.
 
 ## Commands
 
@@ -175,10 +177,10 @@ available from this repository's virtualenv:
 
 That wrapper is shipped by this project but remains outside runner internals. It
 sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output,
-captures the final message, sanitizes marker-like text from live stdout/stderr,
-and re-emits the single terminal marker from the final message. This keeps the
-core runner provider-agnostic while preserving the runner's exactly-one-marker
-contract.
+streams stdout/stderr as Codex runs while filtering live terminal marker blocks,
+captures the final message, and re-emits the single terminal marker from the
+final message. This keeps the core runner provider-agnostic while preserving the
+runner's exactly-one-marker contract.
 
 ## Exit Codes
 

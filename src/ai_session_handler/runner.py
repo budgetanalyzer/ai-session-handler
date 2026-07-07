@@ -51,6 +51,10 @@ EXIT_INVALID: Final[int] = 5
 _SUPPORTED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
     {"prompt_file", "workspace", "run_id", "transcript_file", "state_file"}
 )
+_MARKER_TAG_PATTERN: Final[str] = "|".join(re.escape(kind.value) for kind in MarkerKind)
+_TERMINAL_MARKER_OPEN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    rf"<(?P<tag>{_MARKER_TAG_PATTERN})>"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,35 @@ class ProcessResult:
 class _StreamItem:
     stream_name: str
     text: str
+
+
+@dataclass(slots=True)
+class _TerminalMarkerDisplayFilter:
+    open_tag: str | None = None
+
+    def filter(self, text: str) -> str:
+        visible_parts: list[str] = []
+        remaining = text
+        while remaining:
+            if self.open_tag is not None:
+                close_tag = f"</{self.open_tag}>"
+                close_index = remaining.find(close_tag)
+                if close_index == -1:
+                    return "".join(visible_parts)
+                remaining = remaining[close_index + len(close_tag) :]
+                self.open_tag = None
+                continue
+
+            match = _TERMINAL_MARKER_OPEN_PATTERN.search(remaining)
+            if match is None:
+                visible_parts.append(remaining)
+                break
+
+            visible_parts.append(remaining[: match.start()])
+            self.open_tag = match.group("tag")
+            remaining = remaining[match.end() :]
+
+        return "".join(visible_parts)
 
 
 class CommandTemplateError(ValueError):
@@ -248,6 +281,10 @@ def run_agent_process(
     stop_message: str | None = None
     stdout_target = sys.stdout if stdout is None else stdout
     stderr_target = sys.stderr if stderr is None else stderr
+    display_filters = {
+        "stdout": _TerminalMarkerDisplayFilter(),
+        "stderr": _TerminalMarkerDisplayFilter(),
+    }
 
     header = TranscriptHeader(
         run_id=run_id,
@@ -269,6 +306,7 @@ def run_agent_process(
                 combined_parts,
                 stdout_target,
                 stderr_target,
+                display_filters,
             )
             if stop_reason is None:
                 matched_pattern = _first_matching_pattern(stop_patterns, combined_parts)
@@ -293,7 +331,14 @@ def run_agent_process(
                 item = output_queue.get(timeout=0.05)
             except Empty:
                 continue
-            _write_stream_item(item, transcript, combined_parts, stdout_target, stderr_target)
+            _write_stream_item(
+                item,
+                transcript,
+                combined_parts,
+                stdout_target,
+                stderr_target,
+                display_filters,
+            )
 
         for thread in threads:
             thread.join(timeout=1)
@@ -305,6 +350,7 @@ def run_agent_process(
             combined_parts,
             stdout_target,
             stderr_target,
+            display_filters,
         )
         if not combined_parts:
             exit_code = process.returncode if process.returncode is not None else -1
@@ -508,13 +554,14 @@ def _drain_output_queue(
     combined_parts: list[str],
     stdout: TextIO,
     stderr: TextIO,
+    display_filters: dict[str, _TerminalMarkerDisplayFilter],
 ) -> None:
     while True:
         try:
             item = output_queue.get_nowait()
         except Empty:
             return
-        _write_stream_item(item, transcript, combined_parts, stdout, stderr)
+        _write_stream_item(item, transcript, combined_parts, stdout, stderr, display_filters)
 
 
 def _write_stream_item(
@@ -523,11 +570,14 @@ def _write_stream_item(
     combined_parts: list[str],
     stdout: TextIO,
     stderr: TextIO,
+    display_filters: dict[str, _TerminalMarkerDisplayFilter],
 ) -> None:
     combined_parts.append(item.text)
     target = stdout if item.stream_name == "stdout" else stderr
-    target.write(item.text)
-    target.flush()
+    display_text = display_filters[item.stream_name].filter(item.text)
+    if display_text:
+        target.write(display_text)
+        target.flush()
     transcript.write(item.text)
     transcript.flush()
 
