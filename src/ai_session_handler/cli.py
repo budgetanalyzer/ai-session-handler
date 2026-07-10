@@ -18,6 +18,7 @@ from ai_session_handler.config import (
     write_example_config,
 )
 from ai_session_handler.phases import PlanParseError, parse_phase_file
+from ai_session_handler.plan_templates import PlanTemplateError, create_plan_template
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_INVALID,
@@ -76,6 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="print current runner state")
     _add_plan_flag(status_parser)
 
+    create_plan_parser = subparsers.add_parser("create-plan", help="create a plan scaffold")
+    _add_plan_flag(create_plan_parser)
+
     subparsers.add_parser("init", help="create example config and directories")
     return parser
 
@@ -93,6 +97,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_command(args)
     if args.command == "status":
         return _status_command(args)
+    if args.command == "create-plan":
+        return _create_plan_command(args)
     if args.command == "init":
         return _init_command(args)
 
@@ -186,6 +192,20 @@ def _status_command(args: argparse.Namespace) -> int:
         print(f"latest transcript: {state.last_run.transcript_path}")
     else:
         print("latest transcript: none")
+    return 0
+
+
+def _create_plan_command(args: argparse.Namespace) -> int:
+    workspace = _infer_workspace_from_plan(args.plan)
+    plan_path = _resolve_path(workspace, args.plan).resolve()
+
+    try:
+        create_plan_template(plan_path)
+    except PlanTemplateError as error:
+        _print_error(str(error))
+        return EXIT_INVALID
+
+    print(plan_path)
     return 0
 
 

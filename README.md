@@ -15,9 +15,9 @@ container that owns the workspace, not on the user's workstation.
 ## Status
 
 The provider-agnostic task-runner plan is implemented. The package includes
-markdown phase parsing, durable state, worker prompt generation, subprocess
-execution with transcripts, terminal marker handling, and `run`, `status`, and
-`init` CLI commands.
+markdown phase parsing, safe plan scaffolding, durable state, worker prompt
+generation, subprocess execution with transcripts, terminal marker handling,
+and `create-plan`, `run`, `status`, and `init` CLI commands.
 
 ## Container Development Setup
 
@@ -30,16 +30,22 @@ python -m venv .venv
 ```
 
 If `.venv/` already exists, rerun the editable install command after dependency
-or packaging changes. Keep the virtualenv container-local and avoid global
-Python tooling for this repo.
+or packaging changes. Keep the virtualenv container-local and use it for this
+repository's quality gates.
+
+The sandbox also manages a non-editable global `ai-session-handler` installation
+with `pipx` from `/workspace/ai-session-handler`. That global command is what
+other repositories should use for plan authoring and phase runs. Local source
+edits do not affect the global command until the pipx installation is refreshed.
 
 ## Entry Points
 
-Both entrypoints are exposed:
+Development and global entrypoints are exposed:
 
 ```bash
 .venv/bin/python -m ai_session_handler --help
 .venv/bin/ai-session-handler --help
+ai-session-handler --help
 ```
 
 ## Command Model
@@ -47,7 +53,7 @@ Both entrypoints are exposed:
 The core command shape is:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command-here" \
   --max-phases 1
@@ -91,16 +97,25 @@ without stdout or stderr, the transcript records that explicitly.
 
 ## Commands
 
+Create a new incomplete execution-plan scaffold:
+
+```bash
+ai-session-handler create-plan --plan docs/plans/plan-22.md
+```
+
+`create-plan` creates missing parent directories, refuses to overwrite an
+existing file, and does not create `.ai-session-handler/` or runner state.
+
 Create the optional example config and generated directories:
 
 ```bash
-.venv/bin/ai-session-handler init
+ai-session-handler init
 ```
 
 Run the next incomplete phase:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command"
 ```
@@ -108,14 +123,14 @@ Run the next incomplete phase:
 Run against another repository by passing the full plan path:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md
 ```
 
 Print durable state and the latest transcript path:
 
 ```bash
-.venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
+ai-session-handler status --plan docs/plans/plan-22.md
 ```
 
 If a phase stops, a later run refuses to continue by default and prints the
@@ -123,7 +138,7 @@ stored stop message, latest transcript path, and recent transcript output when
 available. After human intervention, rerun that phase explicitly:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --retry-stopped
@@ -133,18 +148,47 @@ If the plan file changes, the runner refuses to continue until the change is
 accepted and completed phase ids are verified to still exist:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --accept-plan-change
 ```
+
+## Plan Format
+
+Executable plans are Markdown files with explicit numbered phase headings:
+
+```markdown
+## Phase 1: Title
+```
+
+Any Markdown heading level is accepted, but the heading text must be
+`Phase N: Title`. Phase numbers must be positive, unique, and strictly
+increasing. Phase bodies are preserved exactly between phase headings.
+
+The generated scaffold starts with:
+
+```markdown
+<!-- ai-session-handler-template: incomplete -->
+```
+
+`run` and `status` reject the file while that marker remains. Replace every
+placeholder and remove the marker before using the plan.
+
+Design documents are not executable plans. Headings such as `Stage`,
+`Workstream`, and `Issue`, plus implementation-order lists, may describe useful
+planning structure, but the runner refuses to infer phases from them. When a
+document has no executable phase headings, diagnostics may show those heading
+line numbers only to help the author convert the document.
+
+See [docs/plan-format.md](docs/plan-format.md) for the active format contract.
 
 ## Provider Examples
 
 Codex can be invoked directly when its CLI reads work from stdin:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "codex exec"
 ```
@@ -152,7 +196,7 @@ Codex can be invoked directly when its CLI reads work from stdin:
 Claude or another CLI can be used the same way if it accepts stdin:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "claude"
 ```
@@ -161,18 +205,18 @@ For provider-specific flags, shell setup, or file-based prompt ingestion, use a
 wrapper script and keep that behavior outside the runner:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
 For Codex high-reasoning runs, use the container-local wrapper script when it is
-available from this repository's virtualenv:
+available from the sandbox's global installation:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
-  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high"
+  --agent-cmd "ai-session-handler-codex-high"
 ```
 
 That wrapper is shipped by this project but remains outside runner internals. It
@@ -189,6 +233,10 @@ runner's exactly-one-marker contract.
 - `3`: phase needs clarification
 - `4`: agent process failed, timeout, stop regex, missing marker, or multiple markers
 - `5`: invalid plan, config, command template, or state
+
+Invalid user inputs are printed to stderr with the file, command, marker, or
+state key to fix when that context is available. A plan created by `create-plan`
+returns `5` from `run` or `status` until its incomplete marker is removed.
 
 ## Quality Gates
 

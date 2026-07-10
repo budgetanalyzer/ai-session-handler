@@ -73,16 +73,26 @@ safety, state integrity, or required behavior.
 
 ## Implemented CLI Workflow
 
-- Use `.venv/bin/ai-session-handler init` to create `.ai-session-handler/config.json`,
+- Use `create-plan` to create a safe incomplete execution-plan scaffold before
+  running or checking status.
+- Use `ai-session-handler init` to create `.ai-session-handler/config.json`,
   `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
-- Use `.venv/bin/ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run
-  the next incomplete phase. `PATH` determines the workspace; pass a full plan
-  path to run against another repository. The default `--max-phases` is `1`.
-- Use `.venv/bin/ai-session-handler status --plan PATH` to inspect the next
-  phase, stopped phase, plan hash mismatch, and latest transcript.
+- Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run the next
+  incomplete phase. `PATH` determines the workspace; pass a full plan path to
+  run against another repository. The default `--max-phases` is `1`.
+- Use `ai-session-handler status --plan PATH` to inspect the next phase, stopped
+  phase, plan hash mismatch, and latest transcript.
 - Use `--retry-stopped` only after human intervention on a stopped phase.
 - Use `--accept-plan-change` only after verifying a plan edit should become the
   new accepted plan identity.
+
+## Plan Authoring Guidance
+
+- When creating an implementation or execution plan intended for AI Session
+  Handler, first run `ai-session-handler create-plan --plan PATH`, replace every
+  placeholder, and retain the numbered `## Phase N: Title` headings.
+- Treat the installed command and `docs/plan-format.md` as the source of truth
+  for the current executable plan format.
 
 ## Python Baseline
 

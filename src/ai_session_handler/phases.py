@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from ai_session_handler.plan_templates import INCOMPLETE_PLAN_TEMPLATE_MARKER
+
 PHASE_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#+ Phase ([0-9]+): (.+)$")
+PLANNING_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^#+\s+(Stage|Workstream|Issue)\b(.*)$"
+)
+MAX_DIAGNOSTIC_HEADINGS: Final[int] = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +47,13 @@ class _Heading:
     heading_start_offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class _DiagnosticHeading:
+    kind: str
+    title: str
+    line: int
+
+
 def parse_phase_file(path: Path) -> list[Phase]:
     """Read and parse phases from a markdown plan file."""
     return parse_phases(path.read_text(encoding="utf-8"), source=str(path))
@@ -48,9 +61,17 @@ def parse_phase_file(path: Path) -> list[Phase]:
 
 def parse_phases(markdown: str, *, source: str = "<string>") -> list[Phase]:
     """Parse explicitly marked markdown phases from plan text."""
+    marker_offset = markdown.find(INCOMPLETE_PLAN_TEMPLATE_MARKER)
+    if marker_offset != -1:
+        raise PlanParseError(
+            "incomplete plan template marker remains; replace placeholders and remove the marker",
+            source=source,
+            line=markdown[:marker_offset].count("\n") + 1,
+        )
+
     headings = _find_headings(markdown)
     if not headings:
-        raise PlanParseError("expected at least one phase heading", source=source)
+        raise PlanParseError(_no_phase_message(markdown), source=source)
 
     _validate_headings(headings, source=source)
 
@@ -94,6 +115,50 @@ def _find_headings(markdown: str) -> list[_Heading]:
             )
         offset += len(line)
     return headings
+
+
+def _find_diagnostic_headings(markdown: str) -> list[_DiagnosticHeading]:
+    headings: list[_DiagnosticHeading] = []
+    for line_number, line in enumerate(markdown.splitlines(), start=1):
+        match = PLANNING_HEADING_PATTERN.fullmatch(line)
+        if match is not None:
+            headings.append(
+                _DiagnosticHeading(
+                    kind=match.group(1),
+                    title=match.group(2).strip(),
+                    line=line_number,
+                )
+            )
+    return headings
+
+
+def _no_phase_message(markdown: str) -> str:
+    message = (
+        "expected at least one executable phase heading like '## Phase 1: Title'; "
+        "create a scaffold with 'ai-session-handler create-plan --plan PATH'"
+    )
+    diagnostic_headings = _find_diagnostic_headings(markdown)
+    if not diagnostic_headings:
+        return message
+
+    visible_headings = diagnostic_headings[:MAX_DIAGNOSTIC_HEADINGS]
+    candidates = "; ".join(
+        f"line {heading.line}: {heading.kind}{_diagnostic_title(heading.title)}"
+        for heading in visible_headings
+    )
+    remaining_count = len(diagnostic_headings) - len(visible_headings)
+    if remaining_count > 0:
+        candidates = f"{candidates}; and {remaining_count} more"
+
+    return (
+        f"{message}. Found possible planning headings ({candidates}), but Stage, "
+        "Workstream, and Issue headings are not executable phases and will not be interpreted as "
+        "phases"
+    )
+
+
+def _diagnostic_title(title: str) -> str:
+    return "" if title == "" else f" {title}"
 
 
 def _validate_headings(headings: list[_Heading], *, source: str) -> None:
