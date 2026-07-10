@@ -9,6 +9,7 @@ from ai_session_handler.markers import (
     MissingMarkerError,
     MultipleMarkersError,
     TerminalMarker,
+    TerminalMarkerFilter,
     parse_terminal_marker,
 )
 
@@ -41,3 +42,11 @@ def test_multiple_markers_are_rejected() -> None:
         parse_terminal_marker(
             "<phase-complete>One</phase-complete><phase-blocked>Two</phase-blocked>"
         )
+
+
+def test_stream_filter_hides_marker_body_across_chunks() -> None:
+    marker_filter = TerminalMarkerFilter()
+
+    assert marker_filter.filter("before <phase-blocked>secret") == "before "
+    assert marker_filter.filter(" detail") == ""
+    assert marker_filter.filter("</phase-blocked> after\n") == " after\n"

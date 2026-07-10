@@ -43,6 +43,34 @@ Keep changes scoped to the requested phase, workflow, or user request.
   checkout, reset, clean, stash, branch creation, or automatic worktree behavior.
 - Treat user clarification as a first-class stop state, not as failure.
 
+## Implementation Simplicity (KISS)
+
+**Primary rule: Keep it simple.** Choose the most direct Python implementation
+that correctly handles realistic CLI inputs, local files, subprocess execution,
+state, and transcripts. Simplicity must not come at the expense of process
+safety, state integrity, or required behavior.
+
+- Put validation at the boundary that owns the rule: the CLI validates argument
+  shape and required options, plan parsing validates plan syntax, state loading
+  validates persisted schema, and subprocess execution validates command
+  templates and terminal markers.
+- Once raw inputs are validated into typed dataclasses or enums, do not keep
+  rechecking the same invariant throughout internal code.
+- Do not add a guard, fallback, retry path, or custom exception for a state made
+  impossible by an enforced parser, dataclass, enum, or state transition.
+- At external boundaries such as files, JSON, subprocesses, timeouts, and user
+  command templates, handle plausible failures explicitly because they are
+  outside the runner's control.
+- For invalid user inputs, fail with a specific message that tells the user what
+  to fix. Do not build elaborate recovery logic for malformed plans, bad
+  command templates, missing files, or inconsistent generated state.
+- Before adding a defensive branch, identify how the state can arise and what
+  the user or runner can usefully do in response. If neither is concrete, omit
+  the branch.
+- Prefer direct functions, small dataclasses, stdlib tools, and established
+  project patterns over speculative abstractions, compatibility layers, or
+  extension points.
+
 ## Implemented CLI Workflow
 
 - Use `.venv/bin/ai-session-handler init` to create `.ai-session-handler/config.json`,

@@ -147,6 +147,21 @@ def test_invalid_stop_regex_does_not_write_state(tmp_path: Path) -> None:
     assert not state_path.exists()
 
 
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, float("nan")])
+def test_invalid_timeout_does_not_write_state(
+    tmp_path: Path,
+    timeout_seconds: float,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(tmp_path, "agent.py", "print('unused')\n")
+    state_path = tmp_path / ".ai-session-handler" / "plan.json"
+
+    with pytest.raises(ValueError, match="finite number greater than 0"):
+        run_phases(_options(tmp_path, plan_path, script, timeout_seconds=timeout_seconds))
+
+    assert not state_path.exists()
+
+
 def test_render_command_template_preserves_placeholder_paths_with_spaces() -> None:
     command = render_command_template(
         "agent --prompt {prompt_file} --cwd={workspace} --run {run_id}",

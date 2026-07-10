@@ -118,6 +118,27 @@ def test_status_reports_malformed_state_json(
     assert "invalid JSON" in captured.err
 
 
+def test_run_reports_malformed_config_json_with_path(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    config_path = tmp_path / ".ai-session-handler" / "config.json"
+    config_path.parent.mkdir()
+    config_path.write_text("{", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["run", "--plan", "plan.md"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_INVALID
+    assert captured.out == ""
+    assert str(config_path) in captured.err
+    assert "invalid JSON at line 1, column 2" in captured.err
+
+
 def test_run_agent_failure_reports_error_details_to_stderr(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

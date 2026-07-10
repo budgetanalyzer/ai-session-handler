@@ -3,53 +3,20 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import tempfile
 import threading
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, TextIO
+from typing import TextIO
 
-from ai_session_handler.markers import MarkerKind
-
-_MARKER_TAG_PATTERN: Final[str] = "|".join(re.escape(kind.value) for kind in MarkerKind)
-_MARKER_PATTERN: Final[re.Pattern[str]] = re.compile(
-    rf"<(?P<tag>{_MARKER_TAG_PATTERN})>(?P<text>.*?)</(?P=tag)>",
-    re.DOTALL,
+from ai_session_handler.markers import (
+    MarkerKind,
+    MarkerParseError,
+    TerminalMarkerFilter,
+    parse_terminal_marker,
 )
-_MARKER_OPEN_PATTERN: Final[re.Pattern[str]] = re.compile(rf"<(?P<tag>{_MARKER_TAG_PATTERN})>")
-
-
-@dataclass(slots=True)
-class _TerminalMarkerFilter:
-    open_tag: str | None = None
-
-    def filter(self, text: str) -> str:
-        visible_parts: list[str] = []
-        remaining = text
-        while remaining:
-            if self.open_tag is not None:
-                close_tag = f"</{self.open_tag}>"
-                close_index = remaining.find(close_tag)
-                if close_index == -1:
-                    return "".join(visible_parts)
-                remaining = remaining[close_index + len(close_tag) :]
-                self.open_tag = None
-                continue
-
-            match = _MARKER_OPEN_PATTERN.search(remaining)
-            if match is None:
-                visible_parts.append(remaining)
-                break
-
-            visible_parts.append(remaining[: match.start()])
-            self.open_tag = match.group("tag")
-            remaining = remaining[match.end() :]
-
-        return "".join(visible_parts)
 
 
 def _sanitize_markers(text: str) -> str:
@@ -72,7 +39,7 @@ def _write_stdin(stream: TextIO, prompt: str) -> None:
 
 
 def _stream_filtered_output(source: TextIO, target: TextIO) -> None:
-    marker_filter = _TerminalMarkerFilter()
+    marker_filter = TerminalMarkerFilter()
     while True:
         chunk = source.readline()
         if chunk == "":
@@ -137,10 +104,14 @@ def main() -> int:
         except OSError:
             final_message = ""
 
-        matches = list(_MARKER_PATTERN.finditer(final_message))
-        if len(matches) == 1:
-            sys.stdout.write(matches[0].group(0))
-            sys.stdout.write("\n")
+        try:
+            marker = parse_terminal_marker(final_message)
+        except MarkerParseError:
+            marker = None
+
+        if marker is not None:
+            tag = marker.kind.value
+            sys.stdout.write(f"<{tag}>{marker.text}</{tag}>\n")
         elif final_message.strip():
             sys.stdout.write(_sanitize_markers(final_message))
             if not final_message.endswith("\n"):

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
 import re
 import shlex
 import string
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -20,6 +22,7 @@ from ai_session_handler.markers import (
     MarkerKind,
     MissingMarkerError,
     MultipleMarkersError,
+    TerminalMarkerFilter,
     parse_terminal_marker,
 )
 from ai_session_handler.phases import Phase, parse_phase_file
@@ -50,10 +53,6 @@ EXIT_INVALID: Final[int] = 5
 
 _SUPPORTED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
     {"prompt_file", "workspace", "run_id", "transcript_file", "state_file"}
-)
-_MARKER_TAG_PATTERN: Final[str] = "|".join(re.escape(kind.value) for kind in MarkerKind)
-_TERMINAL_MARKER_OPEN_PATTERN: Final[re.Pattern[str]] = re.compile(
-    rf"<(?P<tag>{_MARKER_TAG_PATTERN})>"
 )
 
 
@@ -100,35 +99,6 @@ class _StreamItem:
     text: str
 
 
-@dataclass(slots=True)
-class _TerminalMarkerDisplayFilter:
-    open_tag: str | None = None
-
-    def filter(self, text: str) -> str:
-        visible_parts: list[str] = []
-        remaining = text
-        while remaining:
-            if self.open_tag is not None:
-                close_tag = f"</{self.open_tag}>"
-                close_index = remaining.find(close_tag)
-                if close_index == -1:
-                    return "".join(visible_parts)
-                remaining = remaining[close_index + len(close_tag) :]
-                self.open_tag = None
-                continue
-
-            match = _TERMINAL_MARKER_OPEN_PATTERN.search(remaining)
-            if match is None:
-                visible_parts.append(remaining)
-                break
-
-            visible_parts.append(remaining[: match.start()])
-            self.open_tag = match.group("tag")
-            remaining = remaining[match.end() :]
-
-        return "".join(visible_parts)
-
-
 class CommandTemplateError(ValueError):
     """Raised when an agent command template is invalid."""
 
@@ -137,7 +107,11 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     """Run selected plan phases and persist state transitions."""
     if options.max_phases < 1:
         raise ValueError("max_phases must be at least 1")
-    _compile_stop_patterns(options.stop_on_regex)
+    if options.timeout_seconds is not None and (
+        not math.isfinite(options.timeout_seconds) or options.timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a finite number greater than 0")
+    stop_patterns = _compile_stop_patterns(options.stop_on_regex)
 
     phases = parse_phase_file(options.plan_path)
     state = read_state(options.state_path)
@@ -148,7 +122,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         accept_plan_change=options.accept_plan_change,
     )
 
-    outcome: RunnerOutcome | None = None
+    outcome: RunnerOutcome
     retry_stopped = options.retry_stopped
     for _ in range(options.max_phases):
         phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
@@ -186,7 +160,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             phase=phase,
             plan_path=options.plan_path,
             timeout_seconds=options.timeout_seconds,
-            stop_on_regex=options.stop_on_regex,
+            stop_patterns=stop_patterns,
         )
 
         state, outcome = apply_process_result(state, phase, run_id, process_result)
@@ -195,8 +169,6 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         if outcome.exit_code != EXIT_OK:
             return outcome
 
-    if outcome is None:
-        return RunnerOutcome(EXIT_OK, "runner-complete: no phases selected", state)
     return outcome
 
 
@@ -218,7 +190,7 @@ def run_agent_process(
     phase: Phase,
     plan_path: Path,
     timeout_seconds: float | None,
-    stop_on_regex: Sequence[str],
+    stop_patterns: Sequence[re.Pattern[str]],
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> ProcessResult:
@@ -233,7 +205,6 @@ def run_agent_process(
         transcript_file=transcript_file,
         state_file=state_file,
     )
-    stop_patterns = _compile_stop_patterns(stop_on_regex)
     output_queue: Queue[_StreamItem] = Queue()
     combined_parts: list[str] = []
     process = subprocess.Popen(
@@ -265,25 +236,22 @@ def run_agent_process(
     for thread in threads:
         thread.start()
 
-    timeout_at = (
-        None if timeout_seconds is None else datetime.now(UTC).timestamp() + timeout_seconds
+    timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    assert process.stdin is not None
+    stdin_thread = threading.Thread(
+        target=_write_stdin,
+        args=(process.stdin, prompt_text),
+        daemon=True,
     )
-    stdin_thread: threading.Thread | None = None
-    if process.stdin is not None:
-        stdin_thread = threading.Thread(
-            target=_write_stdin,
-            args=(process.stdin, prompt_text),
-            daemon=True,
-        )
-        stdin_thread.start()
+    stdin_thread.start()
 
     stop_reason: StopReason | None = None
     stop_message: str | None = None
     stdout_target = sys.stdout if stdout is None else stdout
     stderr_target = sys.stderr if stderr is None else stderr
     display_filters = {
-        "stdout": _TerminalMarkerDisplayFilter(),
-        "stderr": _TerminalMarkerDisplayFilter(),
+        "stdout": TerminalMarkerFilter(),
+        "stderr": TerminalMarkerFilter(),
     }
 
     header = TranscriptHeader(
@@ -315,11 +283,7 @@ def run_agent_process(
                     stop_message = f"output matched stop regex: {matched_pattern.pattern}"
                     _terminate_process(process)
 
-            if (
-                stop_reason is None
-                and timeout_at is not None
-                and datetime.now(UTC).timestamp() >= timeout_at
-            ):
+            if stop_reason is None and timeout_at is not None and time.monotonic() >= timeout_at:
                 stop_reason = StopReason.TIMEOUT
                 stop_message = f"agent command timed out after {timeout_seconds:g} seconds"
                 _terminate_process(process)
@@ -340,10 +304,9 @@ def run_agent_process(
                 display_filters,
             )
 
-        for thread in threads:
+        return_code = process.wait()
+        for thread in (*threads, stdin_thread):
             thread.join(timeout=1)
-        if stdin_thread is not None:
-            stdin_thread.join(timeout=1)
         _drain_output_queue(
             output_queue,
             transcript,
@@ -353,14 +316,13 @@ def run_agent_process(
             display_filters,
         )
         if not combined_parts:
-            exit_code = process.returncode if process.returncode is not None else -1
             transcript.write(
-                f"[runner] process exited with code {exit_code} without stdout/stderr output\n"
+                f"[runner] process exited with code {return_code} without stdout/stderr output\n"
             )
 
     finished_at = format_utc_timestamp()
     return ProcessResult(
-        exit_code=process.returncode if process.returncode is not None else -1,
+        exit_code=return_code,
         combined_output="".join(combined_parts),
         started_at=started_at,
         finished_at=finished_at,
@@ -452,7 +414,6 @@ def apply_process_result(
     if marker.kind is MarkerKind.BLOCKED:
         updated = replace(
             state,
-            current_phase=state.current_phase,
             stop=StopState(reason=StopReason.BLOCKED, phase_id=phase.id, message=marker.text),
             last_run=_last_run(run_id, phase.id, "blocked", result, marker.text, EXIT_BLOCKED),
         )
@@ -460,7 +421,6 @@ def apply_process_result(
 
     updated = replace(
         state,
-        current_phase=state.current_phase,
         stop=StopState(
             reason=StopReason.NEEDS_CLARIFICATION,
             phase_id=phase.id,
@@ -493,7 +453,6 @@ def _stopped_runner_failure(
     message = result.stop_message or _failure_message(reason, result.exit_code)
     updated = replace(
         state,
-        current_phase=state.current_phase,
         stop=StopState(reason=reason, phase_id=phase.id, message=message),
         last_run=_last_run(run_id, phase.id, reason.value, result, message, EXIT_AGENT_FAILED),
     )
@@ -554,7 +513,7 @@ def _drain_output_queue(
     combined_parts: list[str],
     stdout: TextIO,
     stderr: TextIO,
-    display_filters: dict[str, _TerminalMarkerDisplayFilter],
+    display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
     while True:
         try:
@@ -570,7 +529,7 @@ def _write_stream_item(
     combined_parts: list[str],
     stdout: TextIO,
     stderr: TextIO,
-    display_filters: dict[str, _TerminalMarkerDisplayFilter],
+    display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
     combined_parts.append(item.text)
     target = stdout if item.stream_name == "stdout" else stderr

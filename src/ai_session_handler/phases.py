@@ -125,6 +125,4 @@ def _validate_headings(headings: list[_Heading], *, source: str) -> None:
 
 
 def _line_count(markdown: str) -> int:
-    if markdown == "":
-        return 1
     return len(markdown.splitlines())

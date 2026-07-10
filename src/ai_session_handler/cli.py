@@ -176,10 +176,7 @@ def _status_command(args: argparse.Namespace) -> int:
         if state.stop.message is not None:
             print(f"message: {state.stop.message}")
     else:
-        try:
-            next_phase = select_next_phase(state, phases)
-        except StoppedStateError:
-            next_phase = None
+        next_phase = select_next_phase(state, phases)
         if next_phase is None:
             print("all complete")
         else:

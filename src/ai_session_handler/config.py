@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +38,12 @@ def read_config(path: Path) -> HandlerConfig:
     if not path.exists():
         return HandlerConfig()
 
-    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ConfigError(
+            f"{path}: invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
+        ) from error
     data = _expect_mapping(raw, source=str(path))
 
     return HandlerConfig(
@@ -100,8 +106,8 @@ def _optional_number_at(data: Mapping[str, object], key: str, *, source: str) ->
         return None
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ConfigError(f"{source}: expected {key} to be a number or null")
-    if value <= 0:
-        raise ConfigError(f"{source}: expected {key} to be greater than 0")
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(f"{source}: expected {key} to be a finite number greater than 0")
     return float(value)
 
 
