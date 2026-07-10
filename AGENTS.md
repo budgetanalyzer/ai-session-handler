@@ -2,9 +2,10 @@
 
 ## Repository Purpose
 
-This repository implements a local, provider-agnostic task runner for short AI
-agent sessions. Its job is to run one fine-grained plan phase in a fresh agent
-process, record durable state and transcripts, and stop for human review.
+This repository implements a container-local, provider-agnostic task runner for
+short AI agent sessions. Its job is to run one fine-grained plan phase in a
+fresh agent process inside the AI workspace container, record durable state and
+transcripts, and stop for human review.
 
 ## Session Initialization
 
@@ -18,8 +19,19 @@ Keep changes scoped to the requested phase, workflow, or user request.
 
 ## Core Product Constraints
 
-- Keep v1 provider-agnostic. Invoke arbitrary command templates; do not add
-  Codex, Claude, OpenAI, Anthropic, or other provider adapters to core logic.
+- AI sessions run in the container, not on the user's workstation. Setup,
+  installed entrypoints, agent wrapper scripts, generated state, and transcripts
+  must be container-visible under `/workspace`.
+- Prefer the simplest straightforward solution with convention over
+  configuration. This project is not currently intended for broad distribution,
+  so avoid distribution-oriented knobs, compatibility layers, or YAGNI
+  flexibility unless the user explicitly asks for them.
+- The plan file determines the workspace. Do not add or restore a user-facing
+  `--workspace` selector; infer the workspace from `--plan` and keep generated
+  handler files under that workspace's `.ai-session-handler/` directory.
+- Keep the runner always provider-agnostic. Invoke arbitrary command templates;
+  do not add Codex, Claude, OpenAI, Anthropic, or other provider adapters to
+  core logic.
 - Run one phase by default. Multi-phase execution must require an explicit
   option such as `--max-phases N`.
 - Keep runtime dependencies empty for v1 unless the user explicitly accepts a
@@ -30,6 +42,47 @@ Keep changes scoped to the requested phase, workflow, or user request.
 - Do not perform git workflow operations from the runner. No commit, push,
   checkout, reset, clean, stash, branch creation, or automatic worktree behavior.
 - Treat user clarification as a first-class stop state, not as failure.
+
+## Implementation Simplicity (KISS)
+
+**Primary rule: Keep it simple.** Choose the most direct Python implementation
+that correctly handles realistic CLI inputs, local files, subprocess execution,
+state, and transcripts. Simplicity must not come at the expense of process
+safety, state integrity, or required behavior.
+
+- Put validation at the boundary that owns the rule: the CLI validates argument
+  shape and required options, plan parsing validates plan syntax, state loading
+  validates persisted schema, and subprocess execution validates command
+  templates and terminal markers.
+- Once raw inputs are validated into typed dataclasses or enums, do not keep
+  rechecking the same invariant throughout internal code.
+- Do not add a guard, fallback, retry path, or custom exception for a state made
+  impossible by an enforced parser, dataclass, enum, or state transition.
+- At external boundaries such as files, JSON, subprocesses, timeouts, and user
+  command templates, handle plausible failures explicitly because they are
+  outside the runner's control.
+- For invalid user inputs, fail with a specific message that tells the user what
+  to fix. Do not build elaborate recovery logic for malformed plans, bad
+  command templates, missing files, or inconsistent generated state.
+- Before adding a defensive branch, identify how the state can arise and what
+  the user or runner can usefully do in response. If neither is concrete, omit
+  the branch.
+- Prefer direct functions, small dataclasses, stdlib tools, and established
+  project patterns over speculative abstractions, compatibility layers, or
+  extension points.
+
+## Implemented CLI Workflow
+
+- Use `.venv/bin/ai-session-handler init` to create `.ai-session-handler/config.json`,
+  `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
+- Use `.venv/bin/ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run
+  the next incomplete phase. `PATH` determines the workspace; pass a full plan
+  path to run against another repository. The default `--max-phases` is `1`.
+- Use `.venv/bin/ai-session-handler status --plan PATH` to inspect the next
+  phase, stopped phase, plan hash mismatch, and latest transcript.
+- Use `--retry-stopped` only after human intervention on a stopped phase.
+- Use `--accept-plan-change` only after verifying a plan edit should become the
+  new accepted plan identity.
 
 ## Python Baseline
 
@@ -79,13 +132,22 @@ Use Ruff as the single formatting, linting, pyupgrade, and import-sorting path.
 Do not add Black, isort, Flake8, or autopep8 unless the user explicitly asks for
 that tool split.
 
-Expected commands:
+Expected commands in this workspace use the repository-local virtualenv. If
+`.venv/` is missing, create/install the dev environment first rather than
+falling back to global tooling. The virtualenv is container-owned for this
+project; install the package and development tools in editable mode inside the
+container:
 
 ```bash
-python -m ruff format .
-python -m ruff check . --fix
-python -m mypy src tests
-python -m pytest
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+```
+
+```bash
+.venv/bin/python -m ruff format .
+.venv/bin/python -m ruff check . --fix
+.venv/bin/python -m mypy src tests
+.venv/bin/python -m pytest
 ```
 
 Recommended initial Ruff settings:
@@ -126,6 +188,12 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Split substituted commands with `shlex.split`.
 - Execute with `shell=False`.
 - Put provider-specific shell setup in wrapper scripts, not runner internals.
+- Treat optional provider wrappers, such as a Codex high-reasoning wrapper, as
+  container-visible scripts invoked through `--agent-cmd`. Do not add a core
+  `codex-high` mode or other provider adapter to the runner.
+- Provider wrappers should accept the worker prompt on stdin, preserve useful
+  stdout/stderr for transcripts, return the provider process exit code, and
+  preserve the exactly-one-terminal-marker contract expected by the runner.
 - Stream stdout and stderr while also writing transcripts.
 - Parse terminal markers from combined captured output after process completion
   or controlled stop.
@@ -188,8 +256,8 @@ practice:
   import modes that avoid path surprises.
 - `uv` is commonly seen in modern Python workflows, but do not make it required
   for this repo unless the project intentionally adopts it. Maintain a standard
-  `python -m pip install -e ".[dev]"` workflow unless a package-manager decision
-  is documented.
+  `.venv/bin/python -m pip install -e ".[dev]"` workflow inside the container
+  unless a package-manager decision is documented.
 
 Reference sources for future checks: Python Packaging User Guide, PEP 8, PEP
 257, Ruff documentation, mypy documentation, and pytest good integration

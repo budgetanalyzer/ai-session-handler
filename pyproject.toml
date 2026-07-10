@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-session-handler"
+version = "0.1.0"
+description = "Provider-agnostic runner for short AI agent plan phases."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Bleu Rubin" },
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "mypy",
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+ai-session-handler = "ai_session_handler.cli:main"
+ai-session-handler-codex-high = "ai_session_handler.provider_wrappers.codex_high_exec_filter:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["ai_session_handler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-config --strict-markers --import-mode=importlib"

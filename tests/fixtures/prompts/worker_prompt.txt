@@ -1,0 +1,67 @@
+AI SESSION HANDLER WORKER PROTOCOL
+
+CONTEXT
+- workspace_path: /repo
+- plan_path: /repo/docs/plans/example.md
+- state_path: /repo/.ai-session-handler/example.json
+- run_id: 20260705T120102Z-phase-2
+- transcript_path: /repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt
+- selected_phase_id: phase-2
+- selected_phase_title: Prompt Builder
+
+INSTRUCTIONS
+- Read repository instructions first, including the nearest AGENTS.md.
+- Inspect current repository state before editing.
+- Implement exactly selected phase phase-2: Prompt Builder.
+- Do not proceed to later phases.
+- Follow the selected phase plan unless repository reality contradicts it.
+- Run the validation commands listed in the selected phase.
+- Do not run git commit, push, checkout, reset, clean, stash, branch creation, or automatic worktree operations.
+- Update only files required for the selected phase.
+- Do not make design-changing guesses. If implementation requires an unplanned product, architecture, schema, API, or workflow decision, stop with <phase-needs-clarification>.
+- Treat user clarification as a first-class stop state, not as failure.
+- End with exactly one terminal marker from the grammar below.
+- Do not emit more than one terminal marker.
+
+FAILURE MODES
+- Use <phase-blocked> when the phase cannot be completed without external action.
+- Use <phase-needs-clarification> when a specific user decision is required.
+- Use <phase-complete> only after implementation and validation for this phase are complete.
+
+PREVIOUS STATE SUMMARY START
+schema_version: 1
+plan:
+  path: docs/plans/example.md
+  sha256: abc123
+  accepted_at: 2026-07-05T12:00:00Z
+completed_phase_ids: phase-1
+current_phase:
+  id: phase-2
+  title: Prompt Builder
+stop: none
+last_run:
+  run_id: 20260705T115000Z-phase-1
+  phase_id: phase-1
+  status: phase-complete
+  started_at: 2026-07-05T11:50:00Z
+  finished_at: 2026-07-05T11:55:00Z
+  exit_code: 0
+  transcript_path: .ai-session-handler/transcripts/20260705T115000Z-phase-1.txt
+  summary: Completed parser.
+PREVIOUS STATE SUMMARY END
+
+SELECTED PHASE BODY START
+### Goal
+Build prompts.
+
+### Validation
+```bash
+python -m pytest
+```
+SELECTED PHASE BODY END
+
+TERMINAL MARKER GRAMMAR START
+<phase-complete>summary</phase-complete>
+<phase-blocked>reason</phase-blocked>
+<phase-needs-clarification>specific question for user</phase-needs-clarification>
+TERMINAL MARKER GRAMMAR END

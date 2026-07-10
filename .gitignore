@@ -328,3 +328,14 @@ scratch/
 
 #Python cache
 __pycache__
+
+# Python packaging and virtual environments
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+
+# AI Session Handler configuration
+.ai-session-handler/
