@@ -33,20 +33,17 @@ If `.venv/` already exists, rerun the editable install command after dependency
 or packaging changes. Keep the virtualenv container-local and use it for this
 repository's quality gates.
 
-The sandbox also manages a non-editable global `ai-session-handler` installation
-with `pipx` from `/workspace/ai-session-handler`. Other repositories should use
-that global command for phase runs. Local source edits do not affect the global
-command until the pipx installation is refreshed.
-
 ## Entry Points
 
-Development and global entrypoints are exposed:
+Repository-local entrypoints are exposed:
 
 ```bash
 .venv/bin/python -m ai_session_handler --help
 .venv/bin/ai-session-handler --help
-ai-session-handler --help
 ```
+
+Examples below use `ai-session-handler` for readability. If the virtualenv is
+not active, use `/workspace/ai-session-handler/.venv/bin/ai-session-handler`.
 
 ## Command Model
 
@@ -191,13 +188,13 @@ ai-session-handler run \
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
-For Codex high-reasoning runs, use the container-local wrapper script when it is
-available from the sandbox's global installation:
+For Codex high-reasoning runs, use the wrapper script from this repository's
+container-local virtualenv:
 
 ```bash
 ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
-  --agent-cmd "ai-session-handler-codex-high --model gpt-5.5"
+  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model gpt-5.5"
 ```
 
 That wrapper is shipped by this project but remains outside runner internals. It
