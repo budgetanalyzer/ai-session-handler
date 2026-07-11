@@ -87,8 +87,9 @@ safety, state integrity, or required behavior.
 ## Plan Authoring Guidance
 
 - When creating an implementation or execution plan intended for AI Session
-  Handler, follow `docs/plan-format.md`, use its canonical template, replace
-  every placeholder, and retain the numbered `## Phase N: Title` headings.
+  Handler, follow the [plan format](docs/plan-format.md), use its canonical
+  template, replace every placeholder, and retain the numbered
+  `## Phase N: Title` headings.
 
 ## Python Baseline
 
