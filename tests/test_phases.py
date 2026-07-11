@@ -86,63 +86,9 @@ def test_no_phases_is_rejected() -> None:
     with pytest.raises(PlanParseError) as error:
         parse_phases("# Plan\n\nNo explicit phases.\n", source="plan.md")
 
-    message = str(error.value)
-    assert "plan.md: expected at least one executable phase heading like '## Phase 1: Title'" in (
-        message
+    assert str(error.value) == (
+        "plan.md: expected at least one executable phase heading like '## Phase 1: Title'"
     )
-    assert "ai-session-handler create-plan --plan PATH" in message
-
-
-def test_design_document_headings_are_diagnostic_only() -> None:
-    markdown = (
-        "# Rollout Design\n"
-        "\n"
-        "## Stage 1: Discovery\n"
-        "\n"
-        "### Issue AUTH-101: Token expiry\n"
-        "\n"
-        "#### Stage 1: Reproduce locally\n"
-        "\n"
-        "#### Stage 2: Patch validation\n"
-        "\n"
-        "### Issue AUTH-102: Refresh failure\n"
-        "\n"
-        "#### Stage 1: Reproduce in staging\n"
-        "\n"
-        "## Workstream API\n"
-        "\n"
-        "Implementation order:\n"
-        "1. Stage 1: Build API changes\n"
-        "2. Issue AUTH-101 before AUTH-102\n"
-    )
-
-    with pytest.raises(PlanParseError) as error:
-        parse_phases(markdown, source="design.md")
-
-    message = str(error.value)
-    assert "design.md: expected at least one executable phase heading like '## Phase 1: Title'" in (
-        message
-    )
-    assert "line 3: Stage 1: Discovery" in message
-    assert "line 5: Issue AUTH-101: Token expiry" in message
-    assert "line 7: Stage 1: Reproduce locally" in message
-    assert "line 11: Issue AUTH-102: Refresh failure" in message
-    assert "line 15: Workstream API" in message
-    assert "Stage, Workstream, and Issue headings are not executable phases" in message
-    assert "will not be interpreted as phases" in message
-    assert "Implementation order" not in message
-
-
-def test_no_phase_diagnostic_headings_are_bounded() -> None:
-    markdown = "\n".join(f"## Stage {number}: Work" for number in range(1, 11))
-
-    with pytest.raises(PlanParseError) as error:
-        parse_phases(markdown, source="large-design.md")
-
-    message = str(error.value)
-    assert "line 8: Stage 8: Work" in message
-    assert "line 9: Stage 9: Work" not in message
-    assert "and 2 more" in message
 
 
 @pytest.mark.parametrize(

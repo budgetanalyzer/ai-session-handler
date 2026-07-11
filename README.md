@@ -15,9 +15,9 @@ container that owns the workspace, not on the user's workstation.
 ## Status
 
 The provider-agnostic task-runner plan is implemented. The package includes
-markdown phase parsing, safe plan scaffolding, durable state, worker prompt
-generation, subprocess execution with transcripts, terminal marker handling,
-and `create-plan`, `run`, `status`, and `init` CLI commands.
+markdown phase parsing, durable state, worker prompt generation, subprocess
+execution with transcripts, terminal marker handling, and `run`, `status`, and
+`init` CLI commands.
 
 ## Container Development Setup
 
@@ -34,9 +34,9 @@ or packaging changes. Keep the virtualenv container-local and use it for this
 repository's quality gates.
 
 The sandbox also manages a non-editable global `ai-session-handler` installation
-with `pipx` from `/workspace/ai-session-handler`. That global command is what
-other repositories should use for plan authoring and phase runs. Local source
-edits do not affect the global command until the pipx installation is refreshed.
+with `pipx` from `/workspace/ai-session-handler`. Other repositories should use
+that global command for phase runs. Local source edits do not affect the global
+command until the pipx installation is refreshed.
 
 ## Entry Points
 
@@ -96,15 +96,6 @@ headers include the agent working directory and rendered argv; if a process exit
 without stdout or stderr, the transcript records that explicitly.
 
 ## Commands
-
-Create a new incomplete execution-plan scaffold:
-
-```bash
-ai-session-handler create-plan --plan docs/plans/plan-22.md
-```
-
-`create-plan` creates missing parent directories, refuses to overwrite an
-existing file, and does not create `.ai-session-handler/` or runner state.
 
 Create the optional example config and generated directories:
 
@@ -166,22 +157,12 @@ Any Markdown heading level is accepted, but the heading text must be
 `Phase N: Title`. Phase numbers must be positive, unique, and strictly
 increasing. Phase bodies are preserved exactly between phase headings.
 
-The generated scaffold starts with:
-
-```markdown
-<!-- ai-session-handler-template: incomplete -->
-```
-
-`run` and `status` reject the file while that marker remains. Replace every
-placeholder and remove the marker before using the plan.
-
 Design documents are not executable plans. Headings such as `Stage`,
 `Workstream`, and `Issue`, plus implementation-order lists, may describe useful
-planning structure, but the runner refuses to infer phases from them. When a
-document has no executable phase headings, diagnostics may show those heading
-line numbers only to help the author convert the document.
+planning structure, but the runner only recognizes explicit phase headings.
 
-See [docs/plan-format.md](docs/plan-format.md) for the active format contract.
+See [docs/plan-format.md](docs/plan-format.md) for the canonical template and
+active format contract.
 
 ## Provider Examples
 
@@ -216,7 +197,7 @@ available from the sandbox's global installation:
 ```bash
 ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
-  --agent-cmd "ai-session-handler-codex-high"
+  --agent-cmd "ai-session-handler-codex-high --model gpt-5.5"
 ```
 
 That wrapper is shipped by this project but remains outside runner internals. It
@@ -224,7 +205,8 @@ sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output
 streams stdout/stderr as Codex runs while filtering live terminal marker blocks,
 captures the final message, and re-emits the single terminal marker from the
 final message. This keeps the core runner provider-agnostic while preserving the
-runner's exactly-one-marker contract.
+runner's exactly-one-marker contract. Omit `--model` to use the Codex CLI
+default or the `CODEX_MODEL` value already present in the environment.
 
 ## Exit Codes
 
@@ -235,8 +217,7 @@ runner's exactly-one-marker contract.
 - `5`: invalid plan, config, command template, or state
 
 Invalid user inputs are printed to stderr with the file, command, marker, or
-state key to fix when that context is available. A plan created by `create-plan`
-returns `5` from `run` or `status` until its incomplete marker is removed.
+state key to fix when that context is available.
 
 ## Quality Gates
 

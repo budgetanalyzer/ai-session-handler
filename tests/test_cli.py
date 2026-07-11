@@ -12,7 +12,6 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
 from ai_session_handler.cli import main
-from ai_session_handler.plan_templates import render_plan_template
 from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVALID
 from ai_session_handler.state import read_state
 
@@ -58,96 +57,12 @@ def test_init_creates_config_and_directories(
     assert (tmp_path / ".ai-session-handler" / "transcripts").is_dir()
 
 
-def test_create_plan_creates_relative_target_before_init_without_state(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    plan_path = tmp_path / "docs" / "plans" / "new-plan.md"
-
-    exit_code = main(["create-plan", "--plan", "docs/plans/new-plan.md"])
-
-    captured = capsys.readouterr()
-
-    assert exit_code == 0
-    assert captured.out == f"{plan_path}\n"
-    assert captured.err == ""
-    assert plan_path.read_text(encoding="utf-8") == render_plan_template(plan_path)
-    assert not (tmp_path / ".ai-session-handler").exists()
-
-
-def test_create_plan_infers_workspace_for_absolute_target(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    workspace = tmp_path / "target-repo"
-    other_cwd = tmp_path / "other"
-    plan_path = workspace / "docs" / "plans" / "absolute-plan.md"
-    (workspace / "AGENTS.md").parent.mkdir(parents=True)
-    (workspace / "AGENTS.md").write_text("# Test repo\n", encoding="utf-8")
-    other_cwd.mkdir()
-    monkeypatch.chdir(other_cwd)
-
-    exit_code = main(["create-plan", "--plan", str(plan_path)])
-
-    captured = capsys.readouterr()
-
-    assert exit_code == 0
-    assert captured.out == f"{plan_path}\n"
-    assert captured.err == ""
-    assert plan_path.read_text(encoding="utf-8") == render_plan_template(plan_path)
-    assert not (workspace / ".ai-session-handler").exists()
-
-
-def test_create_plan_existing_target_fails_without_overwrite(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    plan_path = tmp_path / "docs" / "plans" / "existing.md"
-    plan_path.parent.mkdir(parents=True)
-    original_bytes = b"existing bytes\n"
-    plan_path.write_bytes(original_bytes)
-    monkeypatch.chdir(tmp_path)
-
-    exit_code = main(["create-plan", "--plan", "docs/plans/existing.md"])
-
-    captured = capsys.readouterr()
-
-    assert exit_code == EXIT_INVALID
-    assert captured.out == ""
-    assert "plan already exists" in captured.err
-    assert plan_path.read_bytes() == original_bytes
-
-
-def test_create_plan_invalid_target_path_returns_invalid(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    parent_path = tmp_path / "docs"
-    parent_path.write_text("not a directory\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    exit_code = main(["create-plan", "--plan", "docs/plan.md"])
-
-    captured = capsys.readouterr()
-
-    assert exit_code == EXIT_INVALID
-    assert captured.out == ""
-    assert "parent path is not a directory" in captured.err
-
-
 @pytest.mark.parametrize(
     ("argv", "option"),
     [
         (["init", "--config", "custom.json"], "--config"),
         (["status", "--plan", "plan.md", "--state", "custom.json"], "--state"),
         (["run", "--plan", "plan.md", "--config", "custom.json"], "--config"),
-        (["create-plan", "--plan", "plan.md", "--agent-cmd", "agent"], "--agent-cmd"),
-        (["create-plan", "--workspace", "/tmp", "--plan", "plan.md"], "--workspace"),
     ],
 )
 def test_removed_path_options_are_rejected(
@@ -376,51 +291,6 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "phase-complete: phase-1" in result.stdout
     assert (tmp_path / ".ai-session-handler" / "plan.json").exists()
-
-
-def test_create_plan_subprocess_and_status_rejects_incomplete_marker(tmp_path: Path) -> None:
-    plan_path = tmp_path / "docs" / "plans" / "subprocess-plan.md"
-
-    create_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ai_session_handler",
-            "create-plan",
-            "--plan",
-            "docs/plans/subprocess-plan.md",
-        ],
-        check=False,
-        capture_output=True,
-        cwd=tmp_path,
-        text=True,
-    )
-
-    assert create_result.returncode == 0
-    assert create_result.stdout == f"{plan_path}\n"
-    assert create_result.stderr == ""
-    assert plan_path.read_text(encoding="utf-8") == render_plan_template(plan_path)
-    assert not (tmp_path / ".ai-session-handler").exists()
-
-    status_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ai_session_handler",
-            "status",
-            "--plan",
-            "docs/plans/subprocess-plan.md",
-        ],
-        check=False,
-        capture_output=True,
-        cwd=tmp_path,
-        text=True,
-    )
-
-    assert status_result.returncode == EXIT_INVALID
-    assert status_result.stdout == ""
-    assert "incomplete plan template marker remains" in status_result.stderr
-    assert "next phase: phase-1" not in status_result.stdout
 
 
 def test_run_infers_workspace_from_absolute_plan_path(

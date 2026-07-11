@@ -5,23 +5,47 @@ not itself executable until it uses explicit numbered phase headings.
 
 ## Creating A Plan
 
-Create a scaffold with the globally installed command:
-
-```bash
-ai-session-handler create-plan --plan docs/plans/example.md
-```
-
-The command creates missing parent directories and refuses to overwrite an existing file. It does
-not create `.ai-session-handler/`, initialize config, or write runner state.
-
-The scaffold starts with this handler-owned marker:
+Create the plan as a Markdown file in the target repository, commonly under `docs/plans/`. Use
+the following template, replace every `TODO`, and repeat the phase block as needed:
 
 ```markdown
-<!-- ai-session-handler-template: incomplete -->
+# TODO Plan Title
+
+TODO: Summarize the intended outcome and relevant context.
+
+## Phase 1: TODO Phase Title
+
+### Goal
+
+TODO
+
+### Scope
+
+TODO
+
+### Non-goals
+
+TODO
+
+### Required context
+
+TODO
+
+### Implementation notes
+
+TODO
+
+### Validation
+
+TODO
+
+### Completion criteria
+
+TODO
 ```
 
-`run` and `status` reject a plan while that marker remains. Replace every placeholder, then remove
-the marker before treating the file as executable.
+Each phase should be fine-grained enough for one fresh agent session. State concrete outcomes,
+boundaries, validation commands or checks, and the conditions that make the phase complete.
 
 ## Executable Phases
 
@@ -44,11 +68,10 @@ The body of a phase is preserved exactly from the line after its heading through
 next phase heading. Use sections such as `Goal`, `Scope`, `Validation`, and `Completion criteria`
 inside the phase body.
 
-## Non-Executable Planning Headings
+## Other Headings
 
 Headings such as `Stage`, `Workstream`, and `Issue` are planning or design headings, not execution
-boundaries. The parser may report their line numbers in an error to help authors repair a document,
-but it never interprets them as phases.
+boundaries. The parser only recognizes headings that match `Phase N: Title`.
 
 Convert a design document into an executable plan by choosing the concrete execution boundaries and
 writing explicit `## Phase N: Title` headings. Do not rely on numbered lists or issue-local stage
