@@ -83,8 +83,12 @@ def test_duplicate_phase_numbers_are_rejected() -> None:
 
 
 def test_no_phases_is_rejected() -> None:
-    with pytest.raises(PlanParseError, match=r"plan.md: expected at least one phase heading"):
+    with pytest.raises(PlanParseError) as error:
         parse_phases("# Plan\n\nNo explicit phases.\n", source="plan.md")
+
+    assert str(error.value) == (
+        "plan.md: expected at least one executable phase heading like '## Phase 1: Title'"
+    )
 
 
 @pytest.mark.parametrize(

@@ -538,6 +538,7 @@ That wrapper:
 
 - reads the worker prompt from stdin
 - sets `CODEX_REASONING_EFFORT=high`
+- optionally accepts `--model` and passes it through as `CODEX_MODEL`
 - runs `codex-lean exec`
 - captures the final message
 - sanitizes marker-like text from live stdout/stderr
@@ -670,4 +671,3 @@ The design bias is conservative:
 - durable state before and after worker execution
 - explicit terminal markers instead of inferred success
 - stopped clarification is a first-class state, not failure
-

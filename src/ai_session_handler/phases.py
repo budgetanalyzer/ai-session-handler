@@ -50,7 +50,10 @@ def parse_phases(markdown: str, *, source: str = "<string>") -> list[Phase]:
     """Parse explicitly marked markdown phases from plan text."""
     headings = _find_headings(markdown)
     if not headings:
-        raise PlanParseError("expected at least one phase heading", source=source)
+        raise PlanParseError(
+            "expected at least one executable phase heading like '## Phase 1: Title'",
+            source=source,
+        )
 
     _validate_headings(headings, source=source)
 

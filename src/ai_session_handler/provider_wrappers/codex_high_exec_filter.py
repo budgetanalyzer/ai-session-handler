@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from ai_session_handler.markers import (
     MarkerKind,
@@ -50,11 +52,24 @@ def _stream_filtered_output(source: TextIO, target: TextIO) -> None:
             target.flush()
 
 
-def main() -> int:
+def _parse_model(argv: Sequence[str] | None) -> str | None:
+    parser = argparse.ArgumentParser(
+        prog="ai-session-handler-codex-high",
+        description="Run codex-lean exec with high reasoning and terminal marker filtering.",
+    )
+    parser.add_argument("--model", help="Codex CLI model slug to pass through as CODEX_MODEL")
+    args = parser.parse_args(argv)
+    return cast(str | None, args.model)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Run Codex in high-reasoning mode and emit only one terminal marker."""
+    model = _parse_model(argv)
     prompt = sys.stdin.read()
     env = os.environ.copy()
     env["CODEX_REASONING_EFFORT"] = "high"
+    if model is not None:
+        env["CODEX_MODEL"] = model
 
     with tempfile.TemporaryDirectory(prefix="ai-session-handler-codex-") as temp_dir:
         final_message_path = Path(temp_dir) / "final-message.txt"

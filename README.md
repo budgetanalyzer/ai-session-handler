@@ -30,24 +30,27 @@ python -m venv .venv
 ```
 
 If `.venv/` already exists, rerun the editable install command after dependency
-or packaging changes. Keep the virtualenv container-local and avoid global
-Python tooling for this repo.
+or packaging changes. Keep the virtualenv container-local and use it for this
+repository's quality gates.
 
 ## Entry Points
 
-Both entrypoints are exposed:
+Repository-local entrypoints are exposed:
 
 ```bash
 .venv/bin/python -m ai_session_handler --help
 .venv/bin/ai-session-handler --help
 ```
 
+Examples below use `ai-session-handler` for readability. If the virtualenv is
+not active, use `/workspace/ai-session-handler/.venv/bin/ai-session-handler`.
+
 ## Command Model
 
 The core command shape is:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command-here" \
   --max-phases 1
@@ -94,13 +97,13 @@ without stdout or stderr, the transcript records that explicitly.
 Create the optional example config and generated directories:
 
 ```bash
-.venv/bin/ai-session-handler init
+ai-session-handler init
 ```
 
 Run the next incomplete phase:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command"
 ```
@@ -108,14 +111,14 @@ Run the next incomplete phase:
 Run against another repository by passing the full plan path:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md
 ```
 
 Print durable state and the latest transcript path:
 
 ```bash
-.venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
+ai-session-handler status --plan docs/plans/plan-22.md
 ```
 
 If a phase stops, a later run refuses to continue by default and prints the
@@ -123,7 +126,7 @@ stored stop message, latest transcript path, and recent transcript output when
 available. After human intervention, rerun that phase explicitly:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --retry-stopped
@@ -133,18 +136,37 @@ If the plan file changes, the runner refuses to continue until the change is
 accepted and completed phase ids are verified to still exist:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --accept-plan-change
 ```
+
+## Plan Format
+
+Executable plans are Markdown files with explicit numbered phase headings:
+
+```markdown
+## Phase 1: Title
+```
+
+Any Markdown heading level is accepted, but the heading text must be
+`Phase N: Title`. Phase numbers must be positive, unique, and strictly
+increasing. Phase bodies are preserved exactly between phase headings.
+
+Design documents are not executable plans. Headings such as `Stage`,
+`Workstream`, and `Issue`, plus implementation-order lists, may describe useful
+planning structure, but the runner only recognizes explicit phase headings.
+
+See [docs/plan-format.md](docs/plan-format.md) for the canonical template and
+active format contract.
 
 ## Provider Examples
 
 Codex can be invoked directly when its CLI reads work from stdin:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "codex exec"
 ```
@@ -152,7 +174,7 @@ Codex can be invoked directly when its CLI reads work from stdin:
 Claude or another CLI can be used the same way if it accepts stdin:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "claude"
 ```
@@ -161,18 +183,18 @@ For provider-specific flags, shell setup, or file-based prompt ingestion, use a
 wrapper script and keep that behavior outside the runner:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
-For Codex high-reasoning runs, use the container-local wrapper script when it is
-available from this repository's virtualenv:
+For Codex high-reasoning runs, use the wrapper script from this repository's
+container-local virtualenv:
 
 ```bash
-.venv/bin/ai-session-handler run \
+ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
-  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high"
+  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model gpt-5.5"
 ```
 
 That wrapper is shipped by this project but remains outside runner internals. It
@@ -180,7 +202,8 @@ sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output
 streams stdout/stderr as Codex runs while filtering live terminal marker blocks,
 captures the final message, and re-emits the single terminal marker from the
 final message. This keeps the core runner provider-agnostic while preserving the
-runner's exactly-one-marker contract.
+runner's exactly-one-marker contract. Omit `--model` to use the Codex CLI
+default or the `CODEX_MODEL` value already present in the environment.
 
 ## Exit Codes
 
@@ -189,6 +212,9 @@ runner's exactly-one-marker contract.
 - `3`: phase needs clarification
 - `4`: agent process failed, timeout, stop regex, missing marker, or multiple markers
 - `5`: invalid plan, config, command template, or state
+
+Invalid user inputs are printed to stderr with the file, command, marker, or
+state key to fix when that context is available.
 
 ## Quality Gates
 
