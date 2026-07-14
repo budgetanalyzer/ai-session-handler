@@ -91,6 +91,19 @@ safety, state integrity, or required behavior.
   template, replace every placeholder, and retain the numbered
   `## Phase N: Title` headings.
 
+  Run a specific plan through the workspace wrapper with:
+
+  ```bash
+  ai-session-handler run \
+    --plan /workspace/REPOSITORY/docs/plans/PLAN.md \
+    --max-phases 999 \
+    --quiet \
+    --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model MODEL"
+  ```
+
+  Omit `--model MODEL` from the quoted agent command to use the wrapper's
+  configured or default model.
+
 ## Python Baseline
 
 Use modern, explicit Python. The implementation should feel like a small typed
@@ -212,6 +225,9 @@ The runner executes user-supplied commands, so keep this surface narrow.
 
 - Keep the plan file as durable intent and state files as durable execution
   history.
+- Treat state files as runner-owned. Worker processes may read the state context
+  provided in their prompt but must not create, edit, replace, or delete state;
+  they report outcomes only through terminal markers.
 - Include schema versions in persisted JSON.
 - Preserve enough state for restart: accepted plan hash, completed phase ids,
   current phase, stop reason, last run id, transcript path, timestamps, and

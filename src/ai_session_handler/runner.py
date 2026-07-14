@@ -69,6 +69,7 @@ class RunOptions:
     stop_on_regex: tuple[str, ...] = ()
     retry_stopped: bool = False
     accept_plan_change: bool = False
+    quiet: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             plan_path=options.plan_path,
             timeout_seconds=options.timeout_seconds,
             stop_patterns=stop_patterns,
+            quiet=options.quiet,
         )
 
         state, outcome = apply_process_result(state, phase, run_id, process_result)
@@ -191,10 +193,11 @@ def run_agent_process(
     plan_path: Path,
     timeout_seconds: float | None,
     stop_patterns: Sequence[re.Pattern[str]],
+    quiet: bool = False,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> ProcessResult:
-    """Execute the agent command, streaming output while capturing a transcript."""
+    """Execute the agent command, capturing output and optionally streaming it live."""
     started_at = format_utc_timestamp()
     transcript_file.parent.mkdir(parents=True, exist_ok=True)
     command = render_command_template(
@@ -247,8 +250,8 @@ def run_agent_process(
 
     stop_reason: StopReason | None = None
     stop_message: str | None = None
-    stdout_target = sys.stdout if stdout is None else stdout
-    stderr_target = sys.stderr if stderr is None else stderr
+    stdout_target = None if quiet else (sys.stdout if stdout is None else stdout)
+    stderr_target = None if quiet else (sys.stderr if stderr is None else stderr)
     display_filters = {
         "stdout": TerminalMarkerFilter(),
         "stderr": TerminalMarkerFilter(),
@@ -511,8 +514,8 @@ def _drain_output_queue(
     output_queue: Queue[_StreamItem],
     transcript: TextIO,
     combined_parts: list[str],
-    stdout: TextIO,
-    stderr: TextIO,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
     while True:
@@ -527,16 +530,17 @@ def _write_stream_item(
     item: _StreamItem,
     transcript: TextIO,
     combined_parts: list[str],
-    stdout: TextIO,
-    stderr: TextIO,
+    stdout: TextIO | None,
+    stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
     combined_parts.append(item.text)
     target = stdout if item.stream_name == "stdout" else stderr
-    display_text = display_filters[item.stream_name].filter(item.text)
-    if display_text:
-        target.write(display_text)
-        target.flush()
+    if target is not None:
+        display_text = display_filters[item.stream_name].filter(item.text)
+        if display_text:
+            target.write(display_text)
+            target.flush()
     transcript.write(item.text)
     transcript.flush()
 

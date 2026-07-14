@@ -55,12 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_plan_flag(run_parser)
     run_parser.add_argument("--agent-cmd", help="agent command template")
     run_parser.add_argument("--max-phases", type=int, help="maximum phases to run")
+    run_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress live agent output while preserving transcripts and the final result",
+    )
     run_parser.add_argument("--timeout", type=float, help="agent timeout in seconds")
     run_parser.add_argument(
         "--stop-on-regex",
         action="append",
         default=[],
-        help="terminate the agent when streamed output matches this regex",
+        help="terminate the agent when its output matches this regex",
     )
     run_parser.add_argument(
         "--retry-stopped",
@@ -131,6 +136,7 @@ def _run_command(args: argparse.Namespace) -> int:
                 stop_on_regex=stop_on_regex,
                 retry_stopped=args.retry_stopped,
                 accept_plan_change=args.accept_plan_change,
+                quiet=args.quiet,
             )
         )
     except StoppedStateError as error:

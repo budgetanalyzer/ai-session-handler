@@ -206,6 +206,47 @@ def test_run_streams_progress_and_prints_terminal_summary_once(
     assert captured.out.count("Set AUTH0_MGMT_DOMAIN.") == 1
 
 
+def test_run_quiet_suppresses_progress_but_preserves_transcript_and_summary(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "import sys\n"
+        "print('working quietly')\n"
+        "print('diagnostic detail', file=sys.stderr)\n"
+        "print('<phase-complete>Implemented quietly.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    assert state.last_run is not None
+    transcript = Path(state.last_run.transcript_path).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert captured.out == "phase-complete: phase-1\n"
+    assert captured.err == ""
+    assert "working quietly" in transcript
+    assert "diagnostic detail" in transcript
+    assert "<phase-complete>Implemented quietly.</phase-complete>" in transcript
+
+
 def test_run_stopped_agent_failure_reports_transcript_tail(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

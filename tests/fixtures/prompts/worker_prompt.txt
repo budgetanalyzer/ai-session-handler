@@ -18,6 +18,7 @@ INSTRUCTIONS
 - Run the validation commands listed in the selected phase.
 - Do not run git commit, push, checkout, reset, clean, stash, branch creation, or automatic worktree operations.
 - Update only files required for the selected phase.
+- Treat state_path as runner-owned and read-only. Do not create, edit, replace, or delete the state file; report the phase outcome only through the terminal marker.
 - Do not make design-changing guesses. If implementation requires an unplanned product, architecture, schema, API, or workflow decision, stop with <phase-needs-clarification>.
 - Treat user clarification as a first-class stop state, not as failure.
 - End with exactly one terminal marker from the grammar below.

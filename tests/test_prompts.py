@@ -33,6 +33,13 @@ def test_render_worker_prompt_handles_body_without_trailing_newline() -> None:
     assert "SELECTED PHASE BODY START\nNo trailing newline\nSELECTED PHASE BODY END" in prompt
 
 
+def test_render_worker_prompt_marks_state_as_runner_owned_and_read_only() -> None:
+    prompt = render_worker_prompt(_prompt_context())
+
+    assert "Treat state_path as runner-owned and read-only" in prompt
+    assert "report the phase outcome only through the terminal marker" in prompt
+
+
 def test_write_worker_prompt_writes_run_prompt_file(tmp_path: Path) -> None:
     context = _prompt_context()
     generated_dir = tmp_path / ".ai-session-handler"

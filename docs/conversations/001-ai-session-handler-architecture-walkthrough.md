@@ -307,6 +307,8 @@ The worker is instructed to:
 - not proceed to later phases
 - run validation commands listed in the selected phase
 - avoid git workflow operations
+- treat the state path as runner-owned, read-only context and report outcomes only through a
+  terminal marker
 - stop for clarification when an unplanned design decision is required
 - emit exactly one terminal marker
 
@@ -345,7 +347,7 @@ Important details:
 - stdout and stderr are read on separate threads.
 - Reader threads send `_StreamItem` records into a `Queue`.
 - The main loop drains the queue.
-- Output is streamed live to the parent process stdout/stderr.
+- Output is streamed live to the parent process stdout/stderr unless `--quiet` is set.
 - Output is also written to the transcript.
 - Output is accumulated into `combined_parts` for marker parsing.
 - Timeout can terminate the child.
@@ -496,6 +498,9 @@ Each transcript starts with metadata:
 - rendered argv
 
 Then it contains captured stdout/stderr from the worker.
+
+`run --quiet` suppresses the live stdout/stderr copy only. Transcript capture, marker parsing,
+durable state updates, and the final CLI phase result are unchanged.
 
 If a process exits without stdout or stderr, the transcript records that explicitly:
 

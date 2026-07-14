@@ -56,6 +56,8 @@ def render_worker_prompt(context: PromptContext) -> str:
         "- Do not run git commit, push, checkout, reset, clean, stash, branch creation, "
         "or automatic worktree operations.\n"
         "- Update only files required for the selected phase.\n"
+        "- Treat state_path as runner-owned and read-only. Do not create, edit, replace, or "
+        "delete the state file; report the phase outcome only through the terminal marker.\n"
         "- Do not make design-changing guesses. If implementation requires an unplanned "
         "product, architecture, schema, API, or workflow decision, stop with "
         "<phase-needs-clarification>.\n"

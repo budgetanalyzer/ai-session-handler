@@ -81,7 +81,10 @@ Provider-specific setup belongs in wrapper scripts, not in runner internals.
 
 The worker prompt is always written under `.ai-session-handler/prompts/` and is
 also piped to the agent process over stdin. Transcripts are written under
-`.ai-session-handler/transcripts/`.
+`.ai-session-handler/transcripts/`. The state path included in the worker prompt
+is read-only context: workers must not modify it and must report their outcome
+through exactly one terminal marker. The runner owns all durable state
+transitions derived from that marker.
 
 The runner streams child stdout and stderr to the same streams while also
 capturing both in the transcript. Terminal marker blocks are captured for
@@ -91,6 +94,12 @@ failed agent outcomes, are printed to stderr. Failed agent outcomes also print
 the transcript path and recent transcript output for debugging. Transcript
 headers include the agent working directory and rendered argv; if a process exits
 without stdout or stderr, the transcript records that explicitly.
+
+Pass `--quiet` to suppress live child stdout and stderr while still capturing
+the complete transcript, parsing terminal markers, and printing the final phase
+result. This is useful when invoking the handler from another agent session,
+where streamed child output would otherwise consume the parent session's
+context.
 
 ## Commands
 
@@ -113,6 +122,14 @@ Run against another repository by passing the full plan path:
 ```bash
 ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md
+```
+
+Run without echoing agent progress while retaining the durable transcript:
+
+```bash
+ai-session-handler run \
+  --plan /workspace/my-project/docs/plans/plan-22.md \
+  --quiet
 ```
 
 Print durable state and the latest transcript path:
