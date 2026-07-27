@@ -35,22 +35,21 @@ repository's quality gates.
 
 ## Entry Points
 
-Repository-local entrypoints are exposed:
+The repository-local entrypoint is exposed at:
 
 ```bash
-.venv/bin/python -m ai_session_handler --help
 .venv/bin/ai-session-handler --help
 ```
 
-Examples below use `ai-session-handler` for readability. If the virtualenv is
-not active, use `/workspace/ai-session-handler/.venv/bin/ai-session-handler`.
+Examples below use the direct virtualenv path and assume they are run from
+`/workspace/ai-session-handler`.
 
 ## Command Model
 
 The core command shape is:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command-here" \
   --max-phases 1
@@ -106,13 +105,13 @@ context.
 Create the optional example config and generated directories:
 
 ```bash
-ai-session-handler init
+.venv/bin/ai-session-handler init
 ```
 
 Run the next incomplete phase:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command"
 ```
@@ -120,14 +119,14 @@ ai-session-handler run \
 Run against another repository by passing the full plan path:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md
 ```
 
 Run without echoing agent progress while retaining the durable transcript:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
   --quiet
 ```
@@ -135,7 +134,7 @@ ai-session-handler run \
 Print durable state and the latest transcript path:
 
 ```bash
-ai-session-handler status --plan docs/plans/plan-22.md
+.venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
 ```
 
 If a phase stops, a later run refuses to continue by default and prints the
@@ -143,7 +142,7 @@ stored stop message, latest transcript path, and recent transcript output when
 available. After human intervention, rerun that phase explicitly:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --retry-stopped
@@ -153,7 +152,7 @@ If the plan file changes, the runner refuses to continue until the change is
 accepted and completed phase ids are verified to still exist:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command" \
   --accept-plan-change
@@ -183,7 +182,7 @@ active format contract.
 Codex can be invoked directly when its CLI reads work from stdin:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "codex exec"
 ```
@@ -191,7 +190,7 @@ ai-session-handler run \
 Claude or another CLI can be used the same way if it accepts stdin:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "claude"
 ```
@@ -200,7 +199,7 @@ For provider-specific flags, shell setup, or file-based prompt ingestion, use a
 wrapper script and keep that behavior outside the runner:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
@@ -209,7 +208,7 @@ For Codex high-reasoning runs, use the wrapper script from this repository's
 container-local virtualenv:
 
 ```bash
-ai-session-handler run \
+.venv/bin/ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md \
   --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model gpt-5.5"
 ```
