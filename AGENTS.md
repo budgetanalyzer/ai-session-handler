@@ -3,9 +3,9 @@
 ## Repository Purpose
 
 This repository implements a container-local, provider-agnostic task runner for
-short AI agent sessions. Its job is to run one fine-grained plan phase in a
-fresh agent process inside the AI workspace container, record durable state and
-transcripts, and stop for human review.
+short AI agent sessions. Its job is to run fine-grained plan phases in fresh
+agent processes inside the AI workspace container and record durable state and
+transcripts.
 
 ## Session Initialization
 
@@ -32,8 +32,8 @@ Keep changes scoped to the requested phase, workflow, or user request.
 - Keep the runner always provider-agnostic. Invoke arbitrary command templates;
   do not add Codex, Claude, OpenAI, Anthropic, or other provider adapters to
   core logic.
-- Run one phase by default. Multi-phase execution must require an explicit
-  option such as `--max-phases N`.
+- Run all remaining phases by default. A phase limit must require an explicit
+  option or config value such as `--max-phases 1`.
 - Keep runtime dependencies empty for v1 unless the user explicitly accepts a
   dependency and the rationale is documented.
 - Keep development dependencies separate from runtime dependencies.
@@ -75,9 +75,9 @@ safety, state integrity, or required behavior.
 
 - Use `ai-session-handler init` to create `.ai-session-handler/config.json`,
   `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
-- Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run the next
-  incomplete phase. `PATH` determines the workspace; pass a full plan path to
-  run against another repository. The default `--max-phases` is `1`.
+- Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run all
+  remaining phases. `PATH` determines the workspace; pass a full plan path to
+  run against another repository. Use `--max-phases N` to limit an invocation.
 - Use `ai-session-handler status --plan PATH` to inspect the next phase, stopped
   phase, plan hash mismatch, and latest transcript.
 - Use `--retry-stopped` only after human intervention on a stopped phase.
@@ -96,7 +96,6 @@ safety, state integrity, or required behavior.
   ```bash
   ai-session-handler run \
     --plan /workspace/REPOSITORY/docs/plans/PLAN.md \
-    --max-phases 999 \
     --quiet \
     --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model MODEL"
   ```

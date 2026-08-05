@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import sys
@@ -35,7 +36,7 @@ def test_python_module_entrypoint_prints_help() -> None:
     )
 
     assert result.returncode == 0
-    assert "Run one provider-agnostic AI agent plan phase and stop." in result.stdout
+    assert "Run a provider-agnostic AI agent plan to completion." in result.stdout
     assert result.stderr == ""
 
 
@@ -55,6 +56,10 @@ def test_init_creates_config_and_directories(
     assert (tmp_path / ".ai-session-handler" / "config.json").exists()
     assert (tmp_path / ".ai-session-handler" / "prompts").is_dir()
     assert (tmp_path / ".ai-session-handler" / "transcripts").is_dir()
+    config = json.loads(
+        (tmp_path / ".ai-session-handler" / "config.json").read_text(encoding="utf-8")
+    )
+    assert config["max_phases"] is None
 
 
 @pytest.mark.parametrize(
@@ -240,7 +245,7 @@ def test_run_quiet_suppresses_progress_but_preserves_transcript_and_summary(
     transcript = Path(state.last_run.transcript_path).read_text(encoding="utf-8")
 
     assert exit_code == 0
-    assert captured.out == "phase-complete: phase-1\n"
+    assert captured.out == "runner-complete: all phases complete\n"
     assert captured.err == ""
     assert "working quietly" in transcript
     assert "diagnostic detail" in transcript
@@ -307,7 +312,7 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
     agent_path.write_text(
         "import sys\n"
         "prompt = sys.stdin.read()\n"
-        "assert 'selected_phase_id: phase-1' in prompt\n"
+        "assert 'selected_phase_id: phase-' in prompt\n"
         "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
         encoding="utf-8",
     )
@@ -330,8 +335,43 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
+    assert "runner-complete: all phases complete" in result.stdout
+    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    assert state.completed_phase_ids == ("phase-1", "phase-2")
+
+
+def test_run_max_phases_one_stops_after_one_phase(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("## Phase 1: One\nBody\n## Phase 2: Two\nBody\n", encoding="utf-8")
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ai_session_handler",
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+            "--max-phases",
+            "1",
+        ],
+        check=False,
+        capture_output=True,
+        cwd=tmp_path,
+        text=True,
+    )
+
+    assert result.returncode == 0
     assert "phase-complete: phase-1" in result.stdout
-    assert (tmp_path / ".ai-session-handler" / "plan.json").exists()
+    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    assert state.completed_phase_ids == ("phase-1",)
 
 
 def test_run_infers_workspace_from_absolute_plan_path(

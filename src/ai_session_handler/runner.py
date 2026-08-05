@@ -64,7 +64,7 @@ class RunOptions:
     plan_path: Path
     state_path: Path
     agent_cmd: str
-    max_phases: int = 1
+    max_phases: int | None = None
     timeout_seconds: float | None = 3600.0
     stop_on_regex: tuple[str, ...] = ()
     retry_stopped: bool = False
@@ -106,7 +106,7 @@ class CommandTemplateError(ValueError):
 
 def run_phases(options: RunOptions) -> RunnerOutcome:
     """Run selected plan phases and persist state transitions."""
-    if options.max_phases < 1:
+    if options.max_phases is not None and options.max_phases < 1:
         raise ValueError("max_phases must be at least 1")
     if options.timeout_seconds is not None and (
         not math.isfinite(options.timeout_seconds) or options.timeout_seconds <= 0
@@ -123,9 +123,9 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         accept_plan_change=options.accept_plan_change,
     )
 
-    outcome: RunnerOutcome
     retry_stopped = options.retry_stopped
-    for _ in range(options.max_phases):
+    phases_run = 0
+    while True:
         phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
         retry_stopped = False
         if phase is None:
@@ -171,7 +171,9 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         if outcome.exit_code != EXIT_OK:
             return outcome
 
-    return outcome
+        phases_run += 1
+        if options.max_phases is not None and phases_run >= options.max_phases:
+            return outcome
 
 
 def create_run_id(phase: Phase, *, timestamp: datetime | None = None) -> str:

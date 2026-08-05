@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the top-level CLI parser."""
     parser = argparse.ArgumentParser(
         prog="ai-session-handler",
-        description="Run one provider-agnostic AI agent plan phase and stop.",
+        description="Run a provider-agnostic AI agent plan to completion.",
     )
     parser.add_argument(
         "--version",
@@ -54,7 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="run selected plan phase(s)")
     _add_plan_flag(run_parser)
     run_parser.add_argument("--agent-cmd", help="agent command template")
-    run_parser.add_argument("--max-phases", type=int, help="maximum phases to run")
+    run_parser.add_argument(
+        "--max-phases",
+        type=int,
+        help="maximum phases to run before stopping (default: run to completion)",
+    )
     run_parser.add_argument(
         "--quiet",
         action="store_true",

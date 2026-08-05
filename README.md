@@ -1,9 +1,8 @@
 # AI Session Handler
 
 AI Session Handler is a container-local, provider-agnostic task runner for short
-AI agent sessions. Its v1 goal is intentionally narrow: run one fine-grained
-plan phase in a fresh agent process inside the AI workspace container, record
-durable state and transcripts, then stop for human review.
+AI agent sessions. It runs each fine-grained plan phase in a fresh agent process
+inside the AI workspace container and records durable state and transcripts.
 
 The runner does not include provider adapters. It invokes an arbitrary command
 template supplied by the user, so Codex, Claude, container-local scripts, or any
@@ -51,12 +50,13 @@ The core command shape is:
 ```bash
 .venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
-  --agent-cmd "your-agent-command-here" \
-  --max-phases 1
+  --agent-cmd "your-agent-command-here"
 ```
 
-By default, the runner executes exactly one phase and exits. Running multiple
-phases requires an explicit option such as `--max-phases N`.
+By default, the runner executes every remaining phase, using a fresh agent
+process for each one, until the plan completes or a phase stops. Set
+`--max-phases 1` to stop after one successful phase, or use another positive
+integer to cap the phases executed in one invocation.
 
 `--agent-cmd` is a command template, not a shell script. The plan path determines
 the workspace: `run` and `status` walk up from `--plan` to the nearest
@@ -68,7 +68,8 @@ absolute container paths for shared tools. Supported placeholders are:
 
 Config is always read from `.ai-session-handler/config.json` in the inferred
 workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
-in that same workspace.
+in that same workspace. The config's `max_phases` value accepts a positive
+integer or `null`; `null` is the default and runs the plan to completion.
 
 - `{prompt_file}`
 - `{workspace}`
@@ -108,12 +109,21 @@ Create the optional example config and generated directories:
 .venv/bin/ai-session-handler init
 ```
 
-Run the next incomplete phase:
+Run all remaining phases:
 
 ```bash
 .venv/bin/ai-session-handler run \
   --plan docs/plans/plan-22.md \
   --agent-cmd "your-agent-command"
+```
+
+Run only the next incomplete phase:
+
+```bash
+.venv/bin/ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "your-agent-command" \
+  --max-phases 1
 ```
 
 Run against another repository by passing the full plan path:
@@ -223,7 +233,7 @@ default or the `CODEX_MODEL` value already present in the environment.
 
 ## Exit Codes
 
-- `0`: phase complete or all phases complete
+- `0`: configured phase limit reached or all phases complete
 - `2`: phase blocked
 - `3`: phase needs clarification
 - `4`: agent process failed, timeout, stop regex, missing marker, or multiple markers

@@ -14,7 +14,7 @@ class HandlerConfig:
     """Optional configuration loaded from .ai-session-handler/config.json."""
 
     agent_cmd: str | None = None
-    max_phases: int = 1
+    max_phases: int | None = None
     timeout_seconds: float | None = 3600.0
     stop_on_regex: tuple[str, ...] = ()
 
@@ -48,7 +48,7 @@ def read_config(path: Path) -> HandlerConfig:
 
     return HandlerConfig(
         agent_cmd=_optional_string_at(data, "agent_cmd", source=str(path)),
-        max_phases=_int_at(data, "max_phases", source=str(path), default=1),
+        max_phases=_optional_positive_int_at(data, "max_phases", source=str(path)),
         timeout_seconds=_optional_number_at(data, "timeout_seconds", source=str(path)),
         stop_on_regex=_string_tuple_at(data, "stop_on_regex", source=str(path)),
     )
@@ -62,9 +62,9 @@ def write_example_config(path: Path) -> None:
     if path.exists():
         raise ConfigError(f"{path}: config already exists")
 
-    payload = {
+    payload: dict[str, object] = {
         "agent_cmd": "codex exec",
-        "max_phases": 1,
+        "max_phases": None,
         "timeout_seconds": 3600,
         "stop_on_regex": [],
     }
@@ -91,10 +91,12 @@ def _optional_string_at(data: Mapping[str, object], key: str, *, source: str) ->
     return value
 
 
-def _int_at(data: Mapping[str, object], key: str, *, source: str, default: int) -> int:
-    value = data.get(key, default)
+def _optional_positive_int_at(data: Mapping[str, object], key: str, *, source: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ConfigError(f"{source}: expected {key} to be an integer")
+        raise ConfigError(f"{source}: expected {key} to be an integer or null")
     if value < 1:
         raise ConfigError(f"{source}: expected {key} to be at least 1")
     return value
