@@ -25,7 +25,7 @@ from ai_session_handler.markers import (
     TerminalMarkerFilter,
     parse_terminal_marker,
 )
-from ai_session_handler.phases import Phase, parse_phase_file
+from ai_session_handler.phases import Phase, parse_phase_file, resolve_phase_workspace
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
 from ai_session_handler.state import (
     LastRun,
@@ -60,7 +60,7 @@ _SUPPORTED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
 class RunOptions:
     """Inputs for executing one or more plan phases."""
 
-    workspace_path: Path
+    plan_workspace_path: Path
     plan_path: Path
     state_path: Path
     agent_cmd: str
@@ -133,13 +133,19 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             write_state(options.state_path, state)
             return RunnerOutcome(EXIT_OK, "runner-complete: all phases complete", state)
 
+        execution_workspace_path = resolve_phase_workspace(
+            phase,
+            plan_workspace_path=options.plan_workspace_path,
+            source=str(options.plan_path),
+        )
         state = with_current_phase(replace(state, stop=None), phase)
         write_state(options.state_path, state)
 
         run_id = create_run_id(phase)
         current_transcript_path = transcript_path(options.state_path.parent, run_id)
         prompt_context = PromptContext(
-            workspace_path=options.workspace_path,
+            plan_workspace_path=options.plan_workspace_path,
+            execution_workspace_path=execution_workspace_path,
             plan_path=options.plan_path,
             state_path=options.state_path,
             phase=phase,
@@ -154,7 +160,8 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             agent_cmd=options.agent_cmd,
             prompt_text=prompt_text,
             prompt_path=prompt_path,
-            workspace_path=options.workspace_path,
+            plan_workspace_path=options.plan_workspace_path,
+            execution_workspace_path=execution_workspace_path,
             run_id=run_id,
             transcript_file=current_transcript_path,
             state_file=options.state_path,
@@ -187,7 +194,8 @@ def run_agent_process(
     agent_cmd: str,
     prompt_text: str,
     prompt_path: Path,
-    workspace_path: Path,
+    plan_workspace_path: Path,
+    execution_workspace_path: Path,
     run_id: str,
     transcript_file: Path,
     state_file: Path,
@@ -205,7 +213,7 @@ def run_agent_process(
     command = render_command_template(
         agent_cmd,
         prompt_file=prompt_path,
-        workspace=workspace_path,
+        workspace=execution_workspace_path,
         run_id=run_id,
         transcript_file=transcript_file,
         state_file=state_file,
@@ -214,7 +222,7 @@ def run_agent_process(
     combined_parts: list[str] = []
     process = subprocess.Popen(
         command,
-        cwd=workspace_path,
+        cwd=execution_workspace_path,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -265,7 +273,8 @@ def run_agent_process(
         phase_title=phase.title,
         plan_path=plan_path,
         state_path=state_file,
-        workspace_path=workspace_path,
+        plan_workspace_path=plan_workspace_path,
+        execution_workspace_path=execution_workspace_path,
         started_at=started_at,
         agent_cmd=agent_cmd,
         rendered_command=command,

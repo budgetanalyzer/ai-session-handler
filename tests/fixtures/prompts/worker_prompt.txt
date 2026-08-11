@@ -1,16 +1,17 @@
 AI SESSION HANDLER WORKER PROTOCOL
 
 CONTEXT
-- workspace_path: /repo
-- plan_path: /repo/docs/plans/example.md
-- state_path: /repo/.ai-session-handler/example.json
+- plan_workspace_path: /plan-repo
+- execution_workspace_path: /service
+- plan_path: /plan-repo/docs/plans/example.md
+- state_path: /plan-repo/.ai-session-handler/example.json
 - run_id: 20260705T120102Z-phase-2
-- transcript_path: /repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt
+- transcript_path: /plan-repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt
 - selected_phase_id: phase-2
 - selected_phase_title: Prompt Builder
 
 INSTRUCTIONS
-- Read repository instructions first, including the nearest AGENTS.md.
+- Read repository instructions first from execution_workspace_path, beginning with the AGENTS.md at its root.
 - Inspect current repository state before editing.
 - Implement exactly selected phase phase-2: Prompt Builder.
 - Do not proceed to later phases.

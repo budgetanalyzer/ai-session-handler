@@ -20,7 +20,8 @@ MARKER_GRAMMAR: Final[str] = (
 class PromptContext:
     """Inputs required to render one worker prompt."""
 
-    workspace_path: Path
+    plan_workspace_path: Path
+    execution_workspace_path: Path
     plan_path: Path
     state_path: Path
     phase: Phase
@@ -38,7 +39,8 @@ def render_worker_prompt(context: PromptContext) -> str:
         "AI SESSION HANDLER WORKER PROTOCOL\n"
         "\n"
         "CONTEXT\n"
-        f"- workspace_path: {context.workspace_path}\n"
+        f"- plan_workspace_path: {context.plan_workspace_path}\n"
+        f"- execution_workspace_path: {context.execution_workspace_path}\n"
         f"- plan_path: {context.plan_path}\n"
         f"- state_path: {context.state_path}\n"
         f"- run_id: {context.run_id}\n"
@@ -47,7 +49,8 @@ def render_worker_prompt(context: PromptContext) -> str:
         f"- selected_phase_title: {context.phase.title}\n"
         "\n"
         "INSTRUCTIONS\n"
-        "- Read repository instructions first, including the nearest AGENTS.md.\n"
+        "- Read repository instructions first from execution_workspace_path, beginning with "
+        "the AGENTS.md at its root.\n"
         "- Inspect current repository state before editing.\n"
         f"- Implement exactly selected phase {context.phase.id}: {context.phase.title}.\n"
         "- Do not proceed to later phases.\n"

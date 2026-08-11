@@ -1,7 +1,7 @@
 # AI Session Handler
 
 AI Session Handler is a container-local, provider-agnostic task runner for short
-AI agent sessions. It runs each fine-grained plan phase in a fresh agent process
+AI agent sessions. It runs each session-sized plan phase in a fresh agent process
 inside the AI workspace container and records durable state and transcripts.
 
 The runner does not include provider adapters. It invokes an arbitrary command
@@ -59,23 +59,27 @@ process for each one, until the plan completes or a phase stops. Set
 integer to cap the phases executed in one invocation.
 
 `--agent-cmd` is a command template, not a shell script. The plan path determines
-the workspace: `run` and `status` walk up from `--plan` to the nearest
-`.ai-session-handler`, `.git`, or `AGENTS.md` marker. The rendered command runs
-inside that workspace, so a full path to a plan in another repository uses that
-repository's config, state, prompts, and transcripts by default. Use executables
-and wrapper scripts that are visible from that container workspace, or pass
-absolute container paths for shared tools. Supported placeholders are:
+the plan workspace: `run` and `status` walk up from `--plan` to the nearest
+`.ai-session-handler`, `.git`, or `AGENTS.md` marker. A full path to a plan in
+another repository therefore uses that repository's config, state, prompts, and
+transcripts.
 
-Config is always read from `.ai-session-handler/config.json` in the inferred
-workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
-in that same workspace. The config's `max_phases` value accepts a positive
-integer or `null`; `null` is the default and runs the plan to completion.
+Each phase declares its own execution workspace relative to the plan workspace.
+The runner requires that directory to exist and contain an `AGENTS.md` at its
+root, then starts that phase's fresh child process there. Use executables and
+wrapper scripts visible from the execution workspace, or pass absolute container
+paths for shared tools. Supported placeholders are:
 
 - `{prompt_file}`
-- `{workspace}`
+- `{workspace}` (the selected phase's execution workspace)
 - `{run_id}`
 - `{transcript_file}`
 - `{state_file}`
+
+Config is always read from `.ai-session-handler/config.json` in the inferred plan
+workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
+in that same plan workspace. The config's `max_phases` value accepts a positive
+integer or `null`; `null` is the default and runs the plan to completion.
 
 Provider-specific setup belongs in wrapper scripts, not in runner internals.
 
@@ -92,8 +96,9 @@ parsing but hidden from the live console; the CLI prints the final phase result
 once after state is updated. Runner-owned errors, including invalid inputs and
 failed agent outcomes, are printed to stderr. Failed agent outcomes also print
 the transcript path and recent transcript output for debugging. Transcript
-headers include the agent working directory and rendered argv; if a process exits
-without stdout or stderr, the transcript records that explicitly.
+headers distinguish the plan and execution workspace paths and include rendered
+argv; if a process exits without stdout or stderr, the transcript records that
+explicitly.
 
 Pass `--quiet` to suppress live child stdout and stderr while still capturing
 the complete transcript, parsing terminal markers, and printing the final phase
@@ -179,6 +184,14 @@ Executable plans are Markdown files with explicit numbered phase headings:
 Any Markdown heading level is accepted, but the heading text must be
 `Phase N: Title`. Phase numbers must be positive, unique, and strictly
 increasing. Phase bodies are preserved exactly between phase headings.
+
+A plan follows `Plan -> Phase -> Execution steps`. Each phase represents one
+fresh, session-sized context allocation and contains one or more concrete
+execution steps. Ordinary phases should target roughly 50–60% of the context
+window, leaving deliberate headroom for discovery, debugging, and validation.
+Every phase also requires exactly one `### Workspace` section containing one
+relative path such as `.` or `../transaction-service`; see the canonical guide
+for phase-boundary and workspace rules.
 
 Design documents are not executable plans. Headings such as `Stage`,
 `Workstream`, and `Issue`, plus implementation-order lists, may describe useful

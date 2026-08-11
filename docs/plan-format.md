@@ -1,12 +1,12 @@
 # AI Session Handler Plan Format
 
 AI Session Handler runs executable Markdown plans. A design document can inform a plan, but it is
-not itself executable until it uses explicit numbered phase headings.
+not executable until it uses the explicit hierarchy `Plan -> Phase -> Execution steps`.
 
 ## Creating A Plan
 
-Create the plan as a Markdown file in the target repository, commonly under `docs/plans/`. Use
-the following template, replace every `TODO`, and repeat the phase block as needed:
+Create the plan as a Markdown file in the plan repository, commonly under `docs/plans/`. Use the
+following template, replace every `TODO`, and repeat the phase block as needed:
 
 ```markdown
 # TODO Plan Title
@@ -14,6 +14,10 @@ the following template, replace every `TODO`, and repeat the phase block as need
 TODO: Summarize the intended outcome and relevant context.
 
 ## Phase 1: TODO Phase Title
+
+### Workspace
+
+TODO: One relative repository path, such as `.` or `../transaction-service`.
 
 ### Goal
 
@@ -31,6 +35,11 @@ TODO
 
 TODO
 
+### Execution steps
+
+1. TODO
+2. TODO
+
 ### Implementation notes
 
 TODO
@@ -44,8 +53,31 @@ TODO
 TODO
 ```
 
-Each phase should be fine-grained enough for one fresh agent session. State concrete outcomes,
-boundaries, validation commands or checks, and the conditions that make the phase complete.
+## Plans, Phases, And Execution Steps
+
+A plan contains one or more phases. A phase is one fresh agent session and contains one or more
+execution steps. Execution steps describe the concrete work within that session; they are not
+separate runner checkpoints.
+
+Treat a phase as a session-sized context allocation, not as a feature, issue, commit, or the
+smallest independently describable task. An ordinary successful phase should be planned to use
+roughly 50–60% of the available context window. The unused capacity is deliberate headroom for
+repository discovery, unexpected debugging, and validation; it is not a target to consume and is
+not measured by the runner.
+
+Before keeping two adjacent phases separate, check whether they can be merged. Prefer one phase
+when their execution steps reuse the same repository instructions, active code context, files,
+abstractions, and validation loop and the combined working set still fits comfortably. Start a new
+phase when at least one of these applies:
+
+- the execution workspace or primary context changes;
+- an independent decision or human review gate must occur between the work;
+- the transition is risky enough to require an isolated validation boundary; or
+- the combined working set no longer fits comfortably in one session with deliberate headroom.
+
+State concrete outcomes, boundaries, execution steps, validation commands or checks, and the
+conditions that make each phase complete. A worker executes exactly one selected phase and never
+continues into a later phase in the same process.
 
 ## Executable Phases
 
@@ -64,15 +96,30 @@ Phase N: Title
 `N` must be a positive integer. Phase numbers must be unique and strictly increasing. Phase ids are
 derived from those numbers, so `Phase 1` becomes `phase-1`.
 
-The body of a phase is preserved exactly from the line after its heading through the line before the
-next phase heading. Use sections such as `Goal`, `Scope`, `Validation`, and `Completion criteria`
-inside the phase body.
+The body of a phase is preserved exactly from the line after its heading through the line before
+the next phase heading. Use the canonical sections above to make the work explicit.
+
+## Phase Workspace
+
+Every phase must contain exactly one `### Workspace` section. Its content must be exactly one
+non-empty relative path line. `.` selects the plan repository; a path such as
+`../transaction-service` selects a sibling repository. Absolute paths are invalid.
+
+Workspace paths resolve from the plan repository root, not from the plan file's directory or the
+caller's current directory. The resolved path must be an existing directory with an `AGENTS.md` at
+that exact root. This ensures the fresh worker's first repository instructions belong to the
+repository where the phase executes.
+
+The plan repository and execution workspace have separate roles. The plan repository owns
+`.ai-session-handler/config.json`, state, generated prompts, and transcripts for the whole plan.
+The selected phase workspace is only the child process working directory and the value of the
+`{workspace}` command placeholder.
 
 ## Other Headings
 
 Headings such as `Stage`, `Workstream`, and `Issue` are planning or design headings, not execution
 boundaries. The parser only recognizes headings that match `Phase N: Title`.
 
-Convert a design document into an executable plan by choosing the concrete execution boundaries and
-writing explicit `## Phase N: Title` headings. Do not rely on numbered lists or issue-local stage
-headings to imply phases.
+Convert a design document into an executable plan by choosing session-sized execution boundaries,
+grouping concrete steps inside them, and writing explicit `## Phase N: Title` headings. Do not rely
+on numbered lists or issue-local stage headings to imply phases.

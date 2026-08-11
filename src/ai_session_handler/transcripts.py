@@ -17,7 +17,8 @@ class TranscriptHeader:
     phase_title: str
     plan_path: Path
     state_path: Path
-    workspace_path: Path
+    plan_workspace_path: Path
+    execution_workspace_path: Path
     started_at: str
     agent_cmd: str
     rendered_command: Sequence[str]
@@ -35,7 +36,8 @@ def render_transcript_header(header: TranscriptHeader) -> str:
         f"phase: {header.phase_id} {header.phase_title}\n"
         f"plan: {header.plan_path}\n"
         f"state: {header.state_path}\n"
-        f"workspace: {header.workspace_path}\n"
+        f"plan_workspace_path: {header.plan_workspace_path}\n"
+        f"execution_workspace_path: {header.execution_workspace_path}\n"
         f"started_at: {header.started_at}\n"
         f"agent_cmd: {header.agent_cmd}\n"
         f"argv: {shlex.join(header.rendered_command)}\n"
