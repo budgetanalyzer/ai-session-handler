@@ -93,9 +93,12 @@ safety, state integrity, or required behavior.
   steps`: each phase is one session-sized context allocation with exactly one
   execution workspace and must never perform execution work across repositories.
   Any repository or workspace switch requires a new phase, regardless of
-  available context capacity. Within that boundary, phases are normally calibrated
-  to use roughly 50–60% of the available context window. The format guide is the
-  canonical contract for phase boundaries and workspace declarations.
+  available context capacity. Within one repository, default to fresh phases at
+  independently verifiable checkpoints even when they reopen the same files.
+  Ordinary phases are planned around 25–35% of context and roughly ten minutes of
+  focused work; treat 40% as a warning threshold. Broad work spanning three or
+  more major concerns normally needs at least three phases. The format guide is
+  the canonical contract for phase sizing, boundaries, and workspace declarations.
 
   Run a specific plan through the workspace wrapper with:
 

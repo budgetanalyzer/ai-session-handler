@@ -5,8 +5,11 @@ not executable until it uses the explicit hierarchy `Plan -> Phase -> Execution 
 
 ## Creating A Plan
 
-Create the plan as a Markdown file in the plan repository, commonly under `docs/plans/`. Use the
-following template, replace every `TODO`, and repeat the phase block as needed:
+Create the plan as a Markdown file in the plan repository, commonly under `docs/plans/`. Before
+filling in detailed steps, sketch the independently verifiable implementation checkpoints and give
+each checkpoint its own phase. Reusing the same workspace and reopening the same files in later
+phases is normal. Use the following template, replace every `TODO`, and repeat the phase block for
+each checkpoint:
 
 ```markdown
 # TODO Plan Title
@@ -59,21 +62,48 @@ A plan contains one or more phases. A phase is one fresh agent session and conta
 execution steps. Execution steps describe the concrete work within that session; they are not
 separate runner checkpoints.
 
-Treat a phase as a session-sized context allocation, not as a feature, issue, commit, or the
-smallest independently describable task. An ordinary successful phase should be planned to use
-roughly 50–60% of the available context window. The unused capacity is deliberate headroom for
-repository discovery, unexpected debugging, and validation; it is not a target to consume and is
-not measured by the runner.
+Treat a phase as a conservative fresh-session allocation, not as a feature, issue, commit, or the
+largest body of work that could theoretically fit in one context window. The goal is to hand work
+to a fresh agent before long-session reasoning degrades or compaction becomes likely.
 
-Before keeping two adjacent phases separate, check whether they can be merged. Prefer one phase
-when their execution steps reuse the same repository instructions, active code context, files,
-abstractions, and validation loop and the combined working set still fits comfortably. Start a new
+Plan an ordinary phase around 25–35% of the available context window. Treat roughly 40% as a
+planning warning threshold, not a utilization target. The unused capacity is deliberate headroom
+for repository discovery, unexpected debugging, and validation. Context use is a planning
+calibration and is not measured by the runner.
+
+As a secondary calibration, an ordinary phase should represent roughly ten minutes of focused
+agent work under expected conditions. This is not a timeout or runtime guarantee, but a phase that
+plausibly requires 20–30 minutes before reaching its first durable checkpoint is too large and
+should be split.
+
+Default to a fresh phase at each independently verifiable implementation checkpoint. Start a new
 phase when at least one of these applies:
 
 - the execution workspace or repository changes;
 - an independent decision or human review gate must occur between the work;
-- the transition is risky enough to require an isolated validation boundary; or
-- the combined working set no longer fits comfortably in one session with deliberate headroom.
+- the transition is risky enough to require an isolated validation boundary;
+- the current milestone can leave a coherent, focused-test-passing state for the next milestone;
+- the phase contains more than about five substantial execution steps;
+- the phase spans three or more major concerns such as API contracts, controllers or adapters,
+  service/domain behavior, persistence, integration coverage, and documentation; or
+- the combined working set could approach 40% of a context window under expected conditions.
+
+Shared files, abstractions, repository instructions, or validation commands are not reasons to
+merge substantial phases. A later worker can reread and modify the same files; that small warm-up
+cost is the intended tradeoff for fresh reasoning. Merge adjacent phases only when both are small,
+tightly coupled, and their combined work still satisfies the conservative size guidance above.
+
+A broad change spanning three or more major concerns should normally have at least three phases,
+even when every phase uses `.` and edits overlapping files. A typical vertical change might use:
+
+1. contracts and the first coherent implementation path, with focused unit tests;
+2. the remaining domain/persistence behavior, with focused service and integration tests; and
+3. cross-cutting integration, documentation, cleanup, and the full validation suite.
+
+Each phase must leave a durable, understandable worktree checkpoint. Its completion criteria and
+focused validation should state what a fresh next worker can rely on. Do not postpone all tests and
+coherence checks until the final phase; reserve the final full-suite phase for integration and
+hardening after earlier focused checks pass.
 
 Repository switching is a hard phase boundary. A phase must perform implementation, validation,
 and other execution work in exactly one repository: its declared execution workspace. If any

@@ -187,8 +187,10 @@ increasing. Phase bodies are preserved exactly between phase headings.
 
 A plan follows `Plan -> Phase -> Execution steps`. Each phase represents one
 fresh, session-sized context allocation and contains one or more concrete
-execution steps. Ordinary phases should target roughly 50–60% of the context
-window, leaving deliberate headroom for discovery, debugging, and validation.
+execution steps. Ordinary phases should target roughly 25–35% of the context
+window and about ten minutes of focused work, with 40% treated as a warning
+threshold rather than a utilization target. Split broad work at independently
+verifiable checkpoints even when consecutive phases edit the same files.
 Every phase also requires exactly one `### Workspace` section containing one
 relative path such as `.` or `../transaction-service`; see the canonical guide
 for phase-boundary and workspace rules. A phase performs execution work only in
