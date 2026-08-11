@@ -191,7 +191,9 @@ execution steps. Ordinary phases should target roughly 50–60% of the context
 window, leaving deliberate headroom for discovery, debugging, and validation.
 Every phase also requires exactly one `### Workspace` section containing one
 relative path such as `.` or `../transaction-service`; see the canonical guide
-for phase-boundary and workspace rules.
+for phase-boundary and workspace rules. A phase performs execution work only in
+that repository. Work requiring another repository must use a separate phase,
+even when the combined work would otherwise fit in one session.
 
 Design documents are not executable plans. Headings such as `Stage`,
 `Workstream`, and `Issue`, plus implementation-order lists, may describe useful

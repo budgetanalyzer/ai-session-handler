@@ -91,9 +91,11 @@ safety, state integrity, or required behavior.
   template, replace every placeholder, and retain the numbered
   `## Phase N: Title` headings. Model the plan as `Plan -> Phase -> Execution
   steps`: each phase is one session-sized context allocation with exactly one
-  execution workspace, normally calibrated to use roughly 50–60% of the
-  available context window. The format guide is the canonical contract for
-  phase boundaries and workspace declarations.
+  execution workspace and must never perform execution work across repositories.
+  Any repository or workspace switch requires a new phase, regardless of
+  available context capacity. Within that boundary, phases are normally calibrated
+  to use roughly 50–60% of the available context window. The format guide is the
+  canonical contract for phase boundaries and workspace declarations.
 
   Run a specific plan through the workspace wrapper with:
 

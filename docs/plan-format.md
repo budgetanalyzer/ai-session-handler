@@ -70,10 +70,16 @@ when their execution steps reuse the same repository instructions, active code c
 abstractions, and validation loop and the combined working set still fits comfortably. Start a new
 phase when at least one of these applies:
 
-- the execution workspace or primary context changes;
+- the execution workspace or repository changes;
 - an independent decision or human review gate must occur between the work;
 - the transition is risky enough to require an isolated validation boundary; or
 - the combined working set no longer fits comfortably in one session with deliberate headroom.
+
+Repository switching is a hard phase boundary. A phase must perform implementation, validation,
+and other execution work in exactly one repository: its declared execution workspace. If any
+execution step requires operating in another repository, put that work in a separate phase whose
+workspace names that repository. Never merge work across repositories into one phase, regardless
+of shared context or available context capacity.
 
 State concrete outcomes, boundaries, execution steps, validation commands or checks, and the
 conditions that make each phase complete. A worker executes exactly one selected phase and never
@@ -104,6 +110,9 @@ the next phase heading. Use the canonical sections above to make the work explic
 Every phase must contain exactly one `### Workspace` section. Its content must be exactly one
 non-empty relative path line. `.` selects the plan repository; a path such as
 `../transaction-service` selects a sibling repository. Absolute paths are invalid.
+
+The declared workspace is the only repository in which that phase may perform execution work. It
+is not a starting directory from which the phase may switch to or modify other repositories.
 
 Workspace paths resolve from the plan repository root, not from the plan file's directory or the
 caller's current directory. The resolved path must be an existing directory with an `AGENTS.md` at
