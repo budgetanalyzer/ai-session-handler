@@ -22,6 +22,8 @@ def test_render_worker_prompt_handles_body_without_trailing_newline() -> None:
             id="phase-2",
             number=2,
             title="Prompt Builder",
+            workspace="../service",
+            workspace_line=12,
             body="No trailing newline",
             start_line=10,
             end_line=10,
@@ -55,6 +57,8 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
         id="phase-2",
         number=2,
         title="Prompt Builder",
+        workspace="../service",
+        workspace_line=12,
         body=("### Goal\nBuild prompts.\n\n### Validation\n```bash\npython -m pytest\n```\n"),
         start_line=10,
         end_line=16,
@@ -79,11 +83,14 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
         ),
     )
     return PromptContext(
-        workspace_path=Path("/repo"),
-        plan_path=Path("/repo/docs/plans/example.md"),
-        state_path=Path("/repo/.ai-session-handler/example.json"),
+        plan_workspace_path=Path("/plan-repo"),
+        execution_workspace_path=Path("/service"),
+        plan_path=Path("/plan-repo/docs/plans/example.md"),
+        state_path=Path("/plan-repo/.ai-session-handler/example.json"),
         phase=selected_phase,
         state=state,
         run_id="20260705T120102Z-phase-2",
-        transcript_path=Path("/repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt"),
+        transcript_path=Path(
+            "/plan-repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt"
+        ),
     )

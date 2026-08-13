@@ -17,6 +17,11 @@ from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVA
 from ai_session_handler.state import read_state
 
 
+@pytest.fixture(autouse=True)
+def _plan_repository_instructions(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
+
+
 def test_main_prints_version(capsys: CaptureFixture[str]) -> None:
     exit_code = main(["--version"])
 
@@ -90,7 +95,7 @@ def test_status_reports_next_phase(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     exit_code = main(["status", "--plan", "plan.md"])
@@ -99,6 +104,8 @@ def test_status_reports_next_phase(
 
     assert exit_code == 0
     assert "next phase: phase-1 One" in captured.out
+    assert f"plan workspace path: {tmp_path}" in captured.out
+    assert f"execution workspace path: {tmp_path}" in captured.out
     assert "latest transcript: none" in captured.out
 
 
@@ -108,7 +115,7 @@ def test_status_reports_malformed_state_json(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     state_dir = tmp_path / ".ai-session-handler"
     state_dir.mkdir()
     (state_dir / "plan.json").write_text("{", encoding="utf-8")
@@ -129,7 +136,7 @@ def test_run_reports_malformed_config_json_with_path(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     config_path = tmp_path / ".ai-session-handler" / "config.json"
     config_path.parent.mkdir()
     config_path.write_text("{", encoding="utf-8")
@@ -150,7 +157,7 @@ def test_run_agent_failure_reports_error_details_to_stderr(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -171,7 +178,8 @@ def test_run_agent_failure_reports_error_details_to_stderr(
     assert captured.out == ""
     assert "agent-failed: agent command exited with code 7" in captured.err
     assert "transcript:" in captured.err
-    assert f"workspace: {tmp_path}" in captured.err
+    assert f"plan_workspace_path: {tmp_path}" in captured.err
+    assert f"execution_workspace_path: {tmp_path}" in captured.err
     assert f"argv: {shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}" in captured.err
     assert "[runner] process exited with code 7 without stdout/stderr output" in captured.err
 
@@ -182,7 +190,7 @@ def test_run_streams_progress_and_prints_terminal_summary_once(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text(
         "print('working...')\n"
@@ -217,7 +225,7 @@ def test_run_quiet_suppresses_progress_but_preserves_transcript_and_summary(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text(
         "import sys\n"
@@ -258,7 +266,7 @@ def test_run_stopped_agent_failure_reports_transcript_tail(
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text(
         "import sys\n"
@@ -298,7 +306,8 @@ def test_run_stopped_agent_failure_reports_transcript_tail(
     assert captured.out == ""
     assert "error: phase phase-1 is stopped: agent-failed" in captured.err
     assert "message: agent command exited with code 1" in captured.err
-    assert f"agent cwd: {tmp_path}" in captured.err
+    assert f"plan workspace path: {tmp_path}" in captured.err
+    assert f"execution workspace path: {tmp_path}" in captured.err
     assert "transcript:" in captured.err
     assert "transcript tail" in captured.err
     assert "Traceback (most recent call last):" in captured.err
@@ -307,7 +316,7 @@ def test_run_stopped_agent_failure_reports_transcript_tail(
 
 def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n## Phase 2: Two\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase() + _phase(title="Two", number=2), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text(
         "import sys\n"
@@ -342,7 +351,7 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
 
 def test_run_max_phases_one_stops_after_one_phase(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nBody\n## Phase 2: Two\nBody\n", encoding="utf-8")
+    plan_path.write_text(_phase() + _phase(title="Two", number=2), encoding="utf-8")
     agent_path = tmp_path / "agent.py"
     agent_path.write_text(
         "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
@@ -388,14 +397,13 @@ def test_run_infers_workspace_from_absolute_plan_path(
     plan_path.parent.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     other_cwd.mkdir()
-    plan_path.write_text(
-        "## Phase 1: One\nBody\n\n## Phase 2: Two\nBody\n",
-        encoding="utf-8",
-    )
+    (workspace / "AGENTS.md").write_text("# Target repository\n", encoding="utf-8")
+    plan_path.write_text(_phase() + _phase(title="Two", number=2), encoding="utf-8")
     agent_path.write_text(
         "import sys\n"
         "prompt = sys.stdin.read()\n"
-        f"assert 'workspace_path: {workspace}' in prompt\n"
+        f"assert 'plan_workspace_path: {workspace}' in prompt\n"
+        f"assert 'execution_workspace_path: {workspace}' in prompt\n"
         "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
         encoding="utf-8",
     )
@@ -415,3 +423,13 @@ def test_run_infers_workspace_from_absolute_plan_path(
     assert exit_code == 0
     assert state_path.exists()
     assert read_state(state_path).completed_phase_ids == ("phase-1", "phase-2")
+
+
+def _phase(
+    *,
+    title: str = "One",
+    number: int = 1,
+    workspace: str = ".",
+    body: str = "Body\n",
+) -> str:
+    return f"## Phase {number}: {title}\n### Workspace\n\n{workspace}\n\n### Goal\n\n{body}"

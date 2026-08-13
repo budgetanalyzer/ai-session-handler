@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ai_session_handler.phases import PlanParseError
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_BLOCKED,
@@ -18,6 +20,11 @@ from ai_session_handler.runner import (
     run_phases,
 )
 from ai_session_handler.state import StopReason, read_state
+
+
+@pytest.fixture(autouse=True)
+def _plan_repository_instructions(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
 
 
 def test_run_records_stdout_complete_marker(tmp_path: Path) -> None:
@@ -87,7 +94,8 @@ def test_run_records_nonzero_process_failure(tmp_path: Path) -> None:
     assert outcome.state.stop.message == "agent command exited with code 7"
     assert outcome.state.last_run is not None
     transcript = Path(outcome.state.last_run.transcript_path).read_text(encoding="utf-8")
-    assert f"workspace: {tmp_path}" in transcript
+    assert f"plan_workspace_path: {tmp_path}" in transcript
+    assert f"execution_workspace_path: {tmp_path}" in transcript
     assert "argv:" in transcript
     assert "[runner] process exited with code 7 without stdout/stderr output" in transcript
 
@@ -105,7 +113,10 @@ def test_run_records_timeout(tmp_path: Path) -> None:
 
 def test_timeout_is_enforced_when_agent_does_not_read_large_stdin(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\n" + ("large body\n" * 200_000), encoding="utf-8")
+    plan_path.write_text(
+        "## Phase 1: One\n### Workspace\n\n.\n\n### Goal\n\n" + ("large body\n" * 200_000),
+        encoding="utf-8",
+    )
     script = _write_agent(
         tmp_path,
         "agent.py",
@@ -200,7 +211,7 @@ def test_run_preserves_prompt_file_placeholder_with_workspace_spaces(tmp_path: P
 
     outcome = run_phases(
         RunOptions(
-            workspace_path=workspace,
+            plan_workspace_path=workspace,
             plan_path=plan_path,
             state_path=workspace / ".ai-session-handler" / "plan.json",
             agent_cmd=command,
@@ -260,7 +271,9 @@ def test_run_records_multiple_markers(tmp_path: Path) -> None:
 def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text(
-        "## Phase 1: One\nFirst\n## Phase 2: Two\nSecond\n## Phase 3: Three\nThird\n",
+        "## Phase 1: One\n### Workspace\n\n.\n\n### Goal\n\nFirst\n"
+        "## Phase 2: Two\n### Workspace\n\n.\n\n### Goal\n\nSecond\n"
+        "## Phase 3: Three\n### Workspace\n\n.\n\n### Goal\n\nThird\n",
         encoding="utf-8",
     )
     record_path = tmp_path / "runs.txt"
@@ -277,7 +290,7 @@ def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
 
     outcome = run_phases(
         RunOptions(
-            workspace_path=tmp_path,
+            plan_workspace_path=tmp_path,
             plan_path=plan_path,
             state_path=tmp_path / ".ai-session-handler" / "plan.json",
             agent_cmd=command,
@@ -292,6 +305,160 @@ def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
     assert record_path.read_text(encoding="utf-8").count("\n") == 2
 
 
+def test_consecutive_phases_use_distinct_workspaces_and_plan_owned_artifacts(
+    tmp_path: Path,
+) -> None:
+    plan_workspace = tmp_path / "plan-repo"
+    first_workspace = tmp_path / "first-service"
+    second_workspace = tmp_path / "second-service"
+    for workspace in (plan_workspace, first_workspace, second_workspace):
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text(f"# {workspace.name}\n", encoding="utf-8")
+
+    plan_path = plan_workspace / "docs" / "plans" / "cross-repo.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        "## Phase 1: First service\n"
+        "### Workspace\n\n../first-service\n\n"
+        "### Goal\n\nImplement first.\n"
+        "## Phase 2: Second service\n"
+        "### Workspace\n\n../second-service\n\n"
+        "### Goal\n\nImplement second.\n",
+        encoding="utf-8",
+    )
+    record_path = plan_workspace / "worker-records.jsonl"
+    script = _write_agent(
+        plan_workspace,
+        "agent.py",
+        "import os\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "with Path(sys.argv[1]).open('a', encoding='utf-8') as output:\n"
+        "    output.write(os.getcwd() + '\\t' + sys.argv[2] + '\\n')\n"
+        "print('<phase-complete>Done.</phase-complete>')\n",
+    )
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+        f"{shlex.quote(str(record_path))} {{workspace}}"
+    )
+    generated_dir = plan_workspace / ".ai-session-handler"
+
+    outcome = run_phases(
+        RunOptions(
+            plan_workspace_path=plan_workspace,
+            plan_path=plan_path,
+            state_path=generated_dir / "cross-repo.json",
+            agent_cmd=command,
+            timeout_seconds=5,
+        )
+    )
+
+    records = [line.split("\t") for line in record_path.read_text(encoding="utf-8").splitlines()]
+    assert outcome.exit_code == EXIT_OK
+    assert [record[0] for record in records] == [
+        str(first_workspace),
+        str(second_workspace),
+    ]
+    assert [record[1] for record in records] == [
+        str(first_workspace),
+        str(second_workspace),
+    ]
+
+    assert (generated_dir / "cross-repo.json").is_file()
+    prompts = sorted((generated_dir / "prompts").glob("*.txt"))
+    transcripts = sorted((generated_dir / "transcripts").glob("*.txt"))
+    assert len(prompts) == 2
+    assert len(transcripts) == 2
+    for prompt, execution_workspace in zip(
+        prompts,
+        (first_workspace, second_workspace),
+        strict=True,
+    ):
+        prompt_text = prompt.read_text(encoding="utf-8")
+        assert f"plan_workspace_path: {plan_workspace}" in prompt_text
+        assert f"execution_workspace_path: {execution_workspace}" in prompt_text
+        assert f"state_path: {generated_dir / 'cross-repo.json'}" in prompt_text
+    assert f"execution_workspace_path: {first_workspace}" in transcripts[0].read_text(
+        encoding="utf-8"
+    )
+    assert f"execution_workspace_path: {second_workspace}" in transcripts[1].read_text(
+        encoding="utf-8"
+    )
+    assert not (first_workspace / ".ai-session-handler").exists()
+    assert not (second_workspace / ".ai-session-handler").exists()
+
+
+def test_invalid_workspace_fails_before_worker_launch(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(
+        "## Phase 1: Missing\n### Workspace\n../missing\n### Goal\nImplement.\n",
+        encoding="utf-8",
+    )
+    sentinel_path = tmp_path / "launched"
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+    )
+
+    with pytest.raises(PlanParseError, match="not an existing directory"):
+        run_phases(_options(tmp_path, plan_path, script))
+
+    assert not sentinel_path.exists()
+    assert not (tmp_path / ".ai-session-handler" / "plan.json").exists()
+
+
+def test_retry_stopped_phase_uses_same_execution_workspace(tmp_path: Path) -> None:
+    plan_workspace = tmp_path / "plan-repo"
+    execution_workspace = tmp_path / "service"
+    for workspace in (plan_workspace, execution_workspace):
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# Instructions\n", encoding="utf-8")
+    plan_path = plan_workspace / "plan.md"
+    plan_path.write_text(
+        "## Phase 1: Service\n### Workspace\n../service\n### Goal\nImplement.\n",
+        encoding="utf-8",
+    )
+    record_path = plan_workspace / "working-directories.txt"
+    script = _write_agent(
+        plan_workspace,
+        "agent.py",
+        "import os\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "record_path = Path(sys.argv[1])\n"
+        "previous = record_path.read_text(encoding='utf-8') if record_path.exists() else ''\n"
+        "record_path.write_text(previous + os.getcwd() + '\\n', encoding='utf-8')\n"
+        "if previous:\n"
+        "    print('<phase-complete>Retried.</phase-complete>')\n"
+        "else:\n"
+        "    print('<phase-blocked>Intervention required.</phase-blocked>')\n",
+    )
+    options = RunOptions(
+        plan_workspace_path=plan_workspace,
+        plan_path=plan_path,
+        state_path=plan_workspace / ".ai-session-handler" / "plan.json",
+        agent_cmd=(
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+            f"{shlex.quote(str(record_path))}"
+        ),
+        timeout_seconds=5,
+    )
+
+    first_outcome = run_phases(options)
+    retry_outcome = run_phases(replace(options, retry_stopped=True))
+
+    assert first_outcome.exit_code == EXIT_BLOCKED
+    assert retry_outcome.exit_code == EXIT_OK
+    assert record_path.read_text(encoding="utf-8").splitlines() == [
+        str(execution_workspace),
+        str(execution_workspace),
+    ]
+
+
 def _options(
     tmp_path: Path,
     plan_path: Path,
@@ -301,7 +468,7 @@ def _options(
     stop_on_regex: tuple[str, ...] = (),
 ) -> RunOptions:
     return RunOptions(
-        workspace_path=tmp_path,
+        plan_workspace_path=tmp_path,
         plan_path=plan_path,
         state_path=tmp_path / ".ai-session-handler" / "plan.json",
         agent_cmd=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
@@ -311,8 +478,12 @@ def _options(
 
 
 def _write_plan(tmp_path: Path) -> Path:
+    (tmp_path / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
     plan_path = tmp_path / "plan.md"
-    plan_path.write_text("## Phase 1: One\nImplement one.\n", encoding="utf-8")
+    plan_path.write_text(
+        "## Phase 1: One\n### Workspace\n\n.\n\n### Goal\n\nImplement one.\n",
+        encoding="utf-8",
+    )
     return plan_path
 
 

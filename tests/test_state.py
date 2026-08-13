@@ -80,7 +80,7 @@ def test_compute_plan_hash_reads_plan_bytes(tmp_path: Path) -> None:
 
 
 def test_new_state_accepts_current_plan_hash(tmp_path: Path) -> None:
-    plan_path = _write_plan(tmp_path, "## Phase 1: One\nBody\n")
+    plan_path = _write_plan(tmp_path, _plan("One", "Body\n"))
     phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
 
     state = ensure_plan_hash_matches(
@@ -112,7 +112,7 @@ def test_completed_phase_selection_returns_none_when_all_complete() -> None:
 
 
 def test_plan_hash_mismatch_is_rejected_by_default(tmp_path: Path) -> None:
-    plan_path = _write_plan(tmp_path, "## Phase 1: One\nOriginal\n")
+    plan_path = _write_plan(tmp_path, _plan("One", "Original\n"))
     phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
     state = ensure_plan_hash_matches(
         RunnerState(),
@@ -120,7 +120,7 @@ def test_plan_hash_mismatch_is_rejected_by_default(tmp_path: Path) -> None:
         phases,
         accepted_at=ACCEPTED_AT,
     )
-    plan_path.write_text("## Phase 1: One\nChanged\n", encoding="utf-8")
+    plan_path.write_text(_plan("One", "Changed\n"), encoding="utf-8")
 
     with pytest.raises(PlanHashMismatchError):
         ensure_plan_hash_matches(state, plan_path, phases)
@@ -142,7 +142,7 @@ def test_retry_stopped_is_required_for_stopped_state() -> None:
 def test_accept_plan_change_updates_hash_when_completed_phase_ids_still_exist(
     tmp_path: Path,
 ) -> None:
-    plan_path = _write_plan(tmp_path, "## Phase 1: One\nOriginal\n## Phase 2: Two\n")
+    plan_path = _write_plan(tmp_path, _plan("One", "Original\n") + _plan("Two", "", number=2))
     phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
     state = ensure_plan_hash_matches(
         RunnerState(completed_phase_ids=("phase-1",)),
@@ -150,7 +150,10 @@ def test_accept_plan_change_updates_hash_when_completed_phase_ids_still_exist(
         phases,
         accepted_at=ACCEPTED_AT,
     )
-    plan_path.write_text("## Phase 1: One Renamed\nChanged\n## Phase 2: Two\n", encoding="utf-8")
+    plan_path.write_text(
+        _plan("One Renamed", "Changed\n") + _plan("Two", "", number=2),
+        encoding="utf-8",
+    )
     changed_phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
 
     accepted = ensure_plan_hash_matches(
@@ -170,7 +173,7 @@ def test_accept_plan_change_updates_hash_when_completed_phase_ids_still_exist(
 
 
 def test_accept_plan_change_rejects_missing_completed_phase_ids(tmp_path: Path) -> None:
-    plan_path = _write_plan(tmp_path, "## Phase 1: One\nOriginal\n## Phase 2: Two\n")
+    plan_path = _write_plan(tmp_path, _plan("One", "Original\n") + _plan("Two", "", number=2))
     phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
     state = accept_plan(
         RunnerState(completed_phase_ids=("phase-1",)),
@@ -178,7 +181,7 @@ def test_accept_plan_change_rejects_missing_completed_phase_ids(tmp_path: Path) 
         phases,
         accepted_at=ACCEPTED_AT,
     )
-    plan_path.write_text("## Phase 2: Two\nChanged\n", encoding="utf-8")
+    plan_path.write_text(_plan("Two", "Changed\n", number=2), encoding="utf-8")
     changed_phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
 
     with pytest.raises(AcceptedPlanChangeError):
@@ -208,6 +211,10 @@ def _write_plan(tmp_path: Path, text: str) -> Path:
 
 def _phases() -> list[Phase]:
     return parse_phases(
-        "## Phase 1: One\nFirst\n## Phase 2: Two\nSecond\n",
+        _plan("One", "First\n") + _plan("Two", "Second\n", number=2),
         source="plan.md",
     )
+
+
+def _plan(title: str, body: str, *, number: int = 1) -> str:
+    return f"## Phase {number}: {title}\n### Workspace\n\n.\n\n### Goal\n\n{body}"

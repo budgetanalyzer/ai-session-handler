@@ -3,7 +3,7 @@
 ## Repository Purpose
 
 This repository implements a container-local, provider-agnostic task runner for
-short AI agent sessions. Its job is to run fine-grained plan phases in fresh
+short AI agent sessions. Its job is to run session-sized plan phases in fresh
 agent processes inside the AI workspace container and record durable state and
 transcripts.
 
@@ -89,7 +89,16 @@ safety, state integrity, or required behavior.
 - When creating an implementation or execution plan intended for AI Session
   Handler, follow the [plan format](docs/plan-format.md), use its canonical
   template, replace every placeholder, and retain the numbered
-  `## Phase N: Title` headings.
+  `## Phase N: Title` headings. Model the plan as `Plan -> Phase -> Execution
+  steps`: each phase is one session-sized context allocation with exactly one
+  execution workspace and must never perform execution work across repositories.
+  Any repository or workspace switch requires a new phase, regardless of
+  available context capacity. Within one repository, default to fresh phases at
+  independently verifiable checkpoints even when they reopen the same files.
+  Ordinary phases are planned around 25–35% of context and roughly ten minutes of
+  focused work; treat 40% as a warning threshold. Broad work spanning three or
+  more major concerns normally needs at least three phases. The format guide is
+  the canonical contract for phase sizing, boundaries, and workspace declarations.
 
   Run a specific plan through the workspace wrapper with:
 

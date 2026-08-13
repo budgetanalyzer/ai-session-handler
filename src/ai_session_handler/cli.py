@@ -17,7 +17,12 @@ from ai_session_handler.config import (
     read_config,
     write_example_config,
 )
-from ai_session_handler.phases import PlanParseError, parse_phase_file
+from ai_session_handler.phases import (
+    Phase,
+    PlanParseError,
+    parse_phase_file,
+    resolve_phase_workspace,
+)
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_INVALID,
@@ -114,10 +119,10 @@ def _add_plan_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    workspace = _infer_workspace_from_plan(args.plan)
-    plan_path = _resolve_path(workspace, args.plan)
-    state_path = default_state_path(workspace, plan_path)
-    config_path = default_config_path(workspace)
+    plan_workspace_path = _infer_plan_workspace_from_plan(args.plan)
+    plan_path = _resolve_path(plan_workspace_path, args.plan)
+    state_path = default_state_path(plan_workspace_path, plan_path)
+    config_path = default_config_path(plan_workspace_path)
 
     try:
         config = read_config(config_path)
@@ -129,7 +134,7 @@ def _run_command(args: argparse.Namespace) -> int:
         stop_on_regex = tuple(config.stop_on_regex) + tuple(args.stop_on_regex)
         outcome = run_phases(
             RunOptions(
-                workspace_path=workspace,
+                plan_workspace_path=plan_workspace_path,
                 plan_path=plan_path,
                 state_path=state_path,
                 agent_cmd=agent_cmd,
@@ -144,7 +149,7 @@ def _run_command(args: argparse.Namespace) -> int:
             )
         )
     except StoppedStateError as error:
-        _print_stopped_state_error(error, state_path, workspace)
+        _print_stopped_state_error(error, state_path, plan_path, plan_workspace_path)
         return EXIT_INVALID
     except (
         CommandTemplateError,
@@ -162,9 +167,9 @@ def _run_command(args: argparse.Namespace) -> int:
 
 
 def _status_command(args: argparse.Namespace) -> int:
-    workspace = _infer_workspace_from_plan(args.plan)
-    plan_path = _resolve_path(workspace, args.plan)
-    state_path = default_state_path(workspace, plan_path)
+    plan_workspace_path = _infer_plan_workspace_from_plan(args.plan)
+    plan_path = _resolve_path(plan_workspace_path, args.plan)
+    state_path = default_state_path(plan_workspace_path, plan_path)
 
     try:
         phases = parse_phase_file(plan_path)
@@ -179,6 +184,26 @@ def _status_command(args: argparse.Namespace) -> int:
         _print_error(str(error))
         return EXIT_INVALID
 
+    selected_phase: Phase | None
+    if state.stop is not None:
+        selected_phase = _phase_by_id(phases, state.stop.phase_id)
+    else:
+        selected_phase = select_next_phase(state, phases)
+
+    try:
+        execution_workspace_path = (
+            None
+            if selected_phase is None
+            else resolve_phase_workspace(
+                selected_phase,
+                plan_workspace_path=plan_workspace_path,
+                source=str(plan_path),
+            )
+        )
+    except PlanParseError as error:
+        _print_error(str(error))
+        return EXIT_INVALID
+
     if state.stop is not None:
         print(f"stopped: {state.stop.phase_id} ({state.stop.reason.value})")
         if state.stop.clarification_request is not None:
@@ -186,11 +211,16 @@ def _status_command(args: argparse.Namespace) -> int:
         if state.stop.message is not None:
             print(f"message: {state.stop.message}")
     else:
-        next_phase = select_next_phase(state, phases)
-        if next_phase is None:
+        if selected_phase is None:
             print("all complete")
         else:
-            print(f"next phase: {next_phase.id} {next_phase.title}")
+            print(f"next phase: {selected_phase.id} {selected_phase.title}")
+
+    print(f"plan workspace path: {plan_workspace_path}")
+    if selected_phase is None:
+        print("execution workspace path: none")
+    else:
+        print(f"execution workspace path: {execution_workspace_path}")
 
     if state.last_run is not None:
         print(f"latest transcript: {state.last_run.transcript_path}")
@@ -218,14 +248,26 @@ def _print_error(message: str) -> None:
 def _print_stopped_state_error(
     error: StoppedStateError,
     state_path: Path,
-    workspace: Path,
+    plan_path: Path,
+    plan_workspace_path: Path,
 ) -> None:
     _print_error(str(error))
     if error.stop.clarification_request is not None:
         print(f"clarification: {error.stop.clarification_request}", file=sys.stderr)
     if error.stop.message is not None:
         print(f"message: {error.stop.message}", file=sys.stderr)
-    print(f"agent cwd: {workspace}", file=sys.stderr)
+    print(f"plan workspace path: {plan_workspace_path}", file=sys.stderr)
+    try:
+        phase = _phase_by_id(parse_phase_file(plan_path), error.stop.phase_id)
+        execution_workspace_path = resolve_phase_workspace(
+            phase,
+            plan_workspace_path=plan_workspace_path,
+            source=str(plan_path),
+        )
+    except (OSError, PlanParseError, StateError) as detail_error:
+        print(f"execution workspace path unavailable: {detail_error}", file=sys.stderr)
+    else:
+        print(f"execution workspace path: {execution_workspace_path}", file=sys.stderr)
 
     try:
         state = read_state(state_path)
@@ -286,7 +328,7 @@ def _has_no_transcript_body(lines: Sequence[str]) -> bool:
     return all(line.strip() == "" for line in lines[header_end + 1 :])
 
 
-def _infer_workspace_from_plan(plan_path: Path) -> Path:
+def _infer_plan_workspace_from_plan(plan_path: Path) -> Path:
     unresolved_plan = plan_path if plan_path.is_absolute() else Path.cwd() / plan_path
     resolved_plan = unresolved_plan.resolve()
     markers = (
@@ -303,5 +345,12 @@ def _infer_workspace_from_plan(plan_path: Path) -> Path:
     return Path.cwd().resolve()
 
 
-def _resolve_path(workspace: Path, path: Path) -> Path:
-    return path if path.is_absolute() else workspace / path
+def _resolve_path(plan_workspace_path: Path, path: Path) -> Path:
+    return path if path.is_absolute() else plan_workspace_path / path
+
+
+def _phase_by_id(phases: Sequence[Phase], phase_id: str) -> Phase:
+    for phase in phases:
+        if phase.id == phase_id:
+            return phase
+    raise StateError(f"phase {phase_id} does not exist in plan")
