@@ -269,6 +269,8 @@ workflow changes.
   grammar, exit codes, or operational workflows change.
 - Update this `AGENTS.md` when agent instructions, quality gates, tooling, or
   repository workflow changes.
+- Before updating `AGENTS.md`, read and apply the
+  [AGENTS.md checkstyle](https://github.com/budgetanalyzer/orchestration/blob/main/docs/agents-md-checkstyle.md).
 - Do not leave documentation updates as follow-up work.
 
 ## Python Research Baseline
