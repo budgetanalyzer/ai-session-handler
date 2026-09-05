@@ -11,13 +11,16 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
+from typing import TextIO
 
 import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
+from ai_session_handler.artifacts import open_text_exclusively
 from ai_session_handler.cli import main
 from ai_session_handler.config import default_state_path, plan_generated_path
+from ai_session_handler.outcomes import OutcomeRecord, read_outcome, write_outcome
 from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVALID
 from ai_session_handler.state import ActiveAttemptStatus, RunnerState, read_state, write_state
 
@@ -333,6 +336,177 @@ def test_run_agent_failure_reports_error_details_to_stderr(
     assert f"execution_workspace_path: {tmp_path}" in captured.err
     assert f"argv: {shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}" in captured.err
     assert "[runner] process exited with code 7 without stdout/stderr output" in captured.err
+
+
+@pytest.mark.parametrize("persistence_failure", ["outcome-write", "state-commit"])
+def test_run_persistence_failure_reports_unresolved_current_attempt(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+    persistence_failure: str,
+) -> None:
+    plan_path, agent_path = _write_two_phase_agent(
+        tmp_path,
+        phase_two_source=(
+            "print('phase two diagnostics')\n"
+            "print('<phase-complete>Phase two complete.</phase-complete>')\n"
+        ),
+    )
+
+    def fail_phase_two_outcome(path: Path, record: OutcomeRecord) -> None:
+        if record.phase.id == "phase-2":
+            raise OSError("phase two outcome write failed")
+        write_outcome(path, record)
+
+    def fail_phase_two_state_commit(path: Path, state: RunnerState) -> None:
+        if (
+            state.active_attempt is None
+            and state.last_run is not None
+            and state.last_run.phase_id == "phase-2"
+        ):
+            raise OSError("phase two state replacement failed")
+        write_state(path, state)
+
+    if persistence_failure == "outcome-write":
+        monkeypatch.setattr("ai_session_handler.runner.write_outcome", fail_phase_two_outcome)
+    else:
+        monkeypatch.setattr("ai_session_handler.runner.write_state", fail_phase_two_state_commit)
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    state = read_state(default_state_path(tmp_path, plan_path))
+    assert state.active_attempt is not None
+    assert state.active_attempt.phase.id == "phase-2"
+    assert state.active_attempt.status is ActiveAttemptStatus.RUNNING
+    assert state.last_run is not None
+    assert state.last_run.phase_id == "phase-1"
+    assert state.last_run.outcome_path is not None
+    assert len(state.committed_outcomes) == 1
+
+    active_attempt = state.active_attempt
+    assert exit_code == EXIT_AGENT_FAILED
+    assert captured.out == ""
+    expected_failure = (
+        "could not write attempt outcome"
+        if persistence_failure == "outcome-write"
+        else "could not record attempt outcome"
+    )
+    assert expected_failure in captured.err
+    assert (
+        f"unresolved attempt: phase-2 ({active_attempt.status.value}, "
+        f"attempt {active_attempt.id})" in captured.err
+    )
+    assert f"transcript: {active_attempt.transcript_path}" in captured.err
+    assert f"planned outcome (uncommitted): {active_attempt.outcome_path}" in captured.err
+    assert "phase two diagnostics" in captured.err
+    assert state.last_run.transcript_path not in captured.err
+    assert state.last_run.outcome_path not in captured.err
+    assert Path(active_attempt.outcome_path).exists() is (persistence_failure == "state-commit")
+
+
+def test_run_failure_before_transcript_creation_reports_current_missing_path(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path, agent_path = _write_two_phase_agent(
+        tmp_path,
+        phase_two_source="raise AssertionError('phase two worker must not launch')\n",
+    )
+
+    def fail_phase_two_transcript(path: Path) -> TextIO:
+        if "-phase-2-" in path.name:
+            raise OSError("phase two transcript creation failed")
+        return open_text_exclusively(path)
+
+    monkeypatch.setattr(
+        "ai_session_handler.runner.open_text_exclusively", fail_phase_two_transcript
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    state = read_state(default_state_path(tmp_path, plan_path))
+    assert state.active_attempt is None
+    assert state.last_run is not None
+    assert state.last_run.phase_id == "phase-2"
+    assert state.last_run.outcome_path is not None
+    assert len(state.committed_outcomes) == 2
+    previous_outcome = state.committed_outcomes[0]
+    previous_record = read_outcome(Path(previous_outcome.path))
+
+    assert exit_code == EXIT_AGENT_FAILED
+    assert captured.out == ""
+    assert f"outcome: {state.last_run.outcome_path}" in captured.err
+    assert f"transcript: {state.last_run.transcript_path}" in captured.err
+    assert "unable to read transcript tail:" in captured.err
+    assert "phase two transcript creation failed" in captured.err
+    assert previous_outcome.path not in captured.err
+    assert previous_record.artifacts.transcript_path not in captured.err
+    assert not Path(state.last_run.transcript_path).exists()
+
+
+def test_run_committed_agent_failure_reports_current_attempt_after_previous_success(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path, agent_path = _write_two_phase_agent(
+        tmp_path,
+        phase_two_source="print('phase two failed', file=sys.stderr)\nsys.exit(9)\n",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    state = read_state(default_state_path(tmp_path, plan_path))
+    assert state.active_attempt is None
+    assert state.last_run is not None
+    assert state.last_run.phase_id == "phase-2"
+    assert state.last_run.outcome_path is not None
+    assert len(state.committed_outcomes) == 2
+    previous_outcome = state.committed_outcomes[0]
+    previous_record = read_outcome(Path(previous_outcome.path))
+
+    assert exit_code == EXIT_AGENT_FAILED
+    assert captured.out == ""
+    assert "agent-failed: agent command exited with code 9" in captured.err
+    assert f"outcome: {state.last_run.outcome_path}" in captured.err
+    assert f"transcript: {state.last_run.transcript_path}" in captured.err
+    assert "phase two failed" in captured.err
+    assert previous_outcome.path not in captured.err
+    assert previous_record.artifacts.transcript_path not in captured.err
 
 
 def test_run_streams_progress_and_prints_terminal_summary_once(
@@ -1024,6 +1198,26 @@ def _phase(
     body: str = "Body\n",
 ) -> str:
     return f"## Phase {number}: {title}\n### Workspace\n\n{workspace}\n\n### Goal\n\n{body}"
+
+
+def _write_two_phase_agent(tmp_path: Path, *, phase_two_source: str) -> tuple[Path, Path]:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase() + _phase(title="Two", number=2), encoding="utf-8")
+    indented_phase_two_source = "".join(
+        f"    {line}" for line in phase_two_source.splitlines(keepends=True)
+    )
+    agent_path = tmp_path / "two-phase-agent.py"
+    agent_path.write_text(
+        "import sys\n"
+        "prompt = sys.stdin.read()\n"
+        "if 'selected_phase_id: phase-1' in prompt:\n"
+        "    print('phase one diagnostics')\n"
+        "    print('<phase-complete>Phase one complete.</phase-complete>')\n"
+        "else:\n"
+        f"{indented_phase_two_source}",
+        encoding="utf-8",
+    )
+    return plan_path, agent_path
 
 
 def _write_blocking_agent(directory: Path, ready_path: Path) -> Path:

@@ -360,14 +360,21 @@ def _print_run_outcome(outcome: RunnerOutcome) -> None:
         return
 
     print(outcome.message, file=sys.stderr)
-    if outcome.state.last_run is not None:
+    if outcome.state.active_attempt is not None:
+        attempt = outcome.state.active_attempt
+        print(
+            f"unresolved attempt: {attempt.phase.id} "
+            f"({attempt.status.value}, attempt {attempt.id})",
+            file=sys.stderr,
+        )
+        print(f"transcript: {attempt.transcript_path}", file=sys.stderr)
+        print(f"planned outcome (uncommitted): {attempt.outcome_path}", file=sys.stderr)
+        _print_transcript_tail(Path(attempt.transcript_path), sys.stderr)
+    elif outcome.state.last_run is not None:
         if outcome.state.last_run.outcome_path is not None:
             print(f"outcome: {outcome.state.last_run.outcome_path}", file=sys.stderr)
         print(f"transcript: {outcome.state.last_run.transcript_path}", file=sys.stderr)
         _print_transcript_tail(Path(outcome.state.last_run.transcript_path), sys.stderr)
-    elif outcome.state.active_attempt is not None:
-        print(f"transcript: {outcome.state.active_attempt.transcript_path}", file=sys.stderr)
-        _print_transcript_tail(Path(outcome.state.active_attempt.transcript_path), sys.stderr)
 
 
 def _print_plan_hash_mismatch(error: PlanHashMismatchError) -> None:

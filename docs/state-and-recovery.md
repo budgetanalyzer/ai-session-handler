@@ -104,6 +104,15 @@ fails, the signal-driven exit continues and the active attempt remains unresolve
 deliberately lose a known-but-not-durable result rather than erasing the evidence that execution
 occurred.
 
+For an exit-code-4 result that retains `active_attempt`, CLI failure reporting selects that
+unresolved attempt instead of the preceding committed `last_run`. It identifies the phase and
+attempt id, prints the current transcript path and tail, and labels the planned outcome path as
+uncommitted whether or not an outcome file was written before persistence failed. If the current
+transcript does not exist or cannot be read, the CLI reports that read failure at the current path;
+it does not fall back to an earlier attempt's artifacts. When no active attempt remains, reporting
+uses the current committed `last_run`. Selecting and reading these artifacts does not change state
+or commit an outcome reference.
+
 ## Exclusive Execution Ownership
 
 Each `run` invocation takes a nonblocking advisory lock on the existing canonical plan-workspace

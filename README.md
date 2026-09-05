@@ -190,11 +190,15 @@ in the transcript but are hidden from the live console, and interleaving between
 pipes cannot manufacture a result. A nonzero exit, timeout, or controlled stop overrides a
 completion marker. The CLI prints the final phase result once after state is updated.
 Runner-owned errors, including invalid inputs and failed agent outcomes, are printed to stderr.
-Failed agent outcomes also print
-the transcript path and recent transcript output for debugging. Transcript
-headers distinguish the plan and execution workspace paths and include rendered
-argv; if a process exits without stdout or stderr, the transcript records that
-explicitly.
+Failed agent outcomes also print the relevant transcript path and recent transcript output for
+debugging. When persistence leaves an active attempt unresolved, that attempt takes precedence
+over an earlier `last_run`: the CLI identifies its phase and attempt id, reports its current
+transcript, and labels its planned outcome path as uncommitted. If no active attempt remains, the
+CLI reports the current committed `last_run`. A missing or unreadable current transcript is
+reported at its own path without substituting artifacts from an earlier phase. This reporting is
+read-only and does not commit an outcome reference. Transcript headers distinguish the plan and
+execution workspace paths and include rendered argv; if a process exits without stdout or stderr,
+the transcript records that explicitly.
 
 Each worker starts in a new POSIX session and process group. On a timeout, a
 stop-regex match, an execution/streaming exception, or a catchable handler
