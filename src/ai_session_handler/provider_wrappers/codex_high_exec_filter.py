@@ -18,13 +18,13 @@ from types import FrameType
 from typing import Final, NoReturn, TextIO, cast
 
 from ai_session_handler.markers import (
-    MarkerKind,
     MarkerParseError,
     TerminalMarkerFilter,
     parse_terminal_marker,
 )
 
 _CHILD_GRACE_SECONDS: Final[float] = 0.5
+_DIAGNOSTIC_PREFIX: Final[str] = "[codex] "
 _THREAD_JOIN_SECONDS: Final[float] = 1.0
 
 
@@ -46,13 +46,31 @@ class _DeferredTerminationSignals:
             _raise_system_exit(self._pending_signal, None)
 
 
-def _sanitize_markers(text: str) -> str:
-    sanitized = text
-    for marker_kind in MarkerKind:
-        tag = marker_kind.value
-        sanitized = sanitized.replace(f"<{tag}>", f"[{tag}]")
-        sanitized = sanitized.replace(f"</{tag}>", f"[/{tag}]")
-    return sanitized
+class _DiagnosticRenderer:
+    """Render provider diagnostics without affecting terminal marker parsing."""
+
+    def __init__(self, target: TextIO) -> None:
+        self._target = target
+        self._at_line_boundary = True
+
+    def write(self, text: str) -> None:
+        rendered: list[str] = []
+        for character in text:
+            if self._at_line_boundary:
+                rendered.append(_DIAGNOSTIC_PREFIX)
+                self._at_line_boundary = False
+            rendered.append("&lt;" if character == "<" else character)
+            if character == "\n":
+                self._at_line_boundary = True
+        if rendered:
+            self._target.write("".join(rendered))
+            self._target.flush()
+
+    def finish(self) -> None:
+        if not self._at_line_boundary:
+            self._target.write("\n")
+            self._target.flush()
+            self._at_line_boundary = True
 
 
 def _write_stdin(stream: TextIO, prompt: str) -> None:
@@ -72,18 +90,14 @@ def _stream_filtered_output(
 ) -> None:
     try:
         marker_filter = TerminalMarkerFilter()
+        renderer = _DiagnosticRenderer(target)
         while True:
             chunk = source.readline()
             if chunk == "":
                 break
-            visible_chunk = _sanitize_markers(marker_filter.filter(chunk))
-            if visible_chunk:
-                target.write(visible_chunk)
-                target.flush()
-        trailing_text = _sanitize_markers(marker_filter.finish())
-        if trailing_text:
-            target.write(trailing_text)
-            target.flush()
+            renderer.write(marker_filter.filter(chunk))
+        renderer.write(marker_filter.finish())
+        renderer.finish()
     except BaseException as error:
         failures.put(error)
 
@@ -184,11 +198,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 if marker is not None:
                     tag = marker.kind.value
-                    sys.stdout.write(f"\n<{tag}>{marker.text}</{tag}>\n")
+                    sys.stdout.write(f"<{tag}>{marker.text}</{tag}>\n")
                 elif final_message.strip():
-                    sys.stdout.write(_sanitize_markers(final_message))
-                    if not final_message.endswith("\n"):
-                        sys.stdout.write("\n")
+                    renderer = _DiagnosticRenderer(sys.stdout)
+                    renderer.write(final_message)
+                    renderer.finish()
 
                 return return_code
             finally:

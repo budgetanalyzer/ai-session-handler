@@ -16,6 +16,13 @@ from pathlib import Path
 import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
+from ai_session_handler.markers import (
+    MarkerKind,
+    MissingMarkerError,
+    TerminalMarker,
+    TerminalMarkerFilter,
+    parse_terminal_marker,
+)
 from ai_session_handler.provider_wrappers import codex_high_exec_filter
 
 
@@ -62,8 +69,8 @@ def test_codex_high_wrapper_filters_live_markers_and_reemits_final_marker(
     assert exit_code == 0
     assert "<phase-blocked>" not in stdout.getvalue()
     assert "<phase-needs-clarification>" not in stderr.getvalue()
-    assert "live " in stdout.getvalue()
-    assert "err " in stderr.getvalue()
+    assert "[codex] live " in stdout.getvalue()
+    assert "[codex] err " in stderr.getvalue()
     assert "ignore me" not in stdout.getvalue()
     assert "ignore me" not in stderr.getvalue()
     assert stdout.getvalue().count("<phase-complete>") == 1
@@ -147,8 +154,10 @@ def test_codex_high_wrapper_sanitizes_invalid_final_message(
 
     assert exit_code == 0
     assert "<phase-complete>" not in stdout.getvalue()
-    assert "[phase-complete]fixture result[/phase-complete]" in stdout.getvalue()
+    assert "[codex] &lt;phase-complete>fixture result&lt;/phase-complete>" in stdout.getvalue()
     assert "RuntimeError: failed" in stdout.getvalue()
+    with pytest.raises(MissingMarkerError):
+        parse_terminal_marker(stdout.getvalue())
 
 
 def test_codex_high_wrapper_sanitizes_unclosed_live_diagnostic(
@@ -177,8 +186,142 @@ def test_codex_high_wrapper_sanitizes_unclosed_live_diagnostic(
     exit_code = codex_high_exec_filter.main([])
 
     assert exit_code == 0
-    assert "diagnostic quoted [phase-blocked] without a close" in stdout.getvalue()
+    assert "[codex] diagnostic quoted &lt;phase-blocked> without a close" in stdout.getvalue()
     assert stdout.getvalue().count("<phase-complete>") == 1
+
+
+@pytest.mark.parametrize(
+    ("final_message", "stdout_diagnostic", "stderr_diagnostic", "expected_marker"),
+    [
+        (
+            "<phase-complete>Implemented.</phase-complete>\n",
+            "review: <phase-blocked > is not the result\n",
+            "",
+            TerminalMarker(MarkerKind.COMPLETE, "Implemented."),
+        ),
+        (
+            "<phase-blocked>Need the fixture.</phase-blocked>\n",
+            "",
+            "```python\nprint('unfinished fence')\n",
+            TerminalMarker(MarkerKind.BLOCKED, "Need the fixture."),
+        ),
+        (
+            "<phase-needs-clarification>Which API?</phase-needs-clarification>\n",
+            "~~~text\nquoted <phase-complete>example</phase-complete>\n",
+            "",
+            TerminalMarker(MarkerKind.NEEDS_CLARIFICATION, "Which API?"),
+        ),
+    ],
+)
+def test_codex_high_wrapper_makes_diagnostics_inert_to_core_parser(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    final_message: str,
+    stdout_diagnostic: str,
+    stderr_diagnostic: str,
+    expected_marker: TerminalMarker,
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    _write_codex_lean_with_output(
+        tmp_path,
+        final_message,
+        stdout_diagnostic=stdout_diagnostic,
+        stderr_diagnostic=stderr_diagnostic,
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 0
+    assert parse_terminal_marker(stdout.getvalue(), stderr.getvalue()) == expected_marker
+    diagnostic_output = stdout.getvalue() + stderr.getvalue()
+    if stdout_diagnostic or stderr_diagnostic:
+        assert "[codex] " in diagnostic_output
+    assert "<phase-blocked >" not in diagnostic_output
+    if "```python" in stderr_diagnostic:
+        assert "[codex] ```python" in stderr.getvalue()
+    if "~~~text" in stdout_diagnostic:
+        assert "[codex] ~~~text" in stdout.getvalue()
+
+
+@pytest.mark.parametrize("fence", ["```python", "~~~text"])
+def test_streamed_diagnostics_are_chunk_independent_and_finish_unterminated_lines(
+    fence: str,
+) -> None:
+    chunks = (
+        "first <phase-blo",
+        "cked>secret\r\nsecond",
+        " line</phase-blocked> tail\r",
+        f"\n{fence}\r\n",
+        "print('<phase-blocked >')",
+    )
+    target = io.StringIO()
+    marker_filter = TerminalMarkerFilter()
+    renderer = codex_high_exec_filter._DiagnosticRenderer(target)
+
+    for chunk in chunks:
+        renderer.write(marker_filter.filter(chunk))
+    renderer.write(marker_filter.finish())
+    renderer.finish()
+
+    assert target.getvalue() == (
+        f"[codex] first  tail\r\n[codex] {fence}\r\n[codex] print('&lt;phase-blocked >')\n"
+    )
+
+
+@pytest.mark.parametrize("final_message", [None, "", "ordinary final prose\n"])
+def test_codex_high_wrapper_does_not_derive_result_from_live_completion(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    final_message: str | None,
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    _write_codex_lean_with_output(
+        tmp_path,
+        final_message,
+        stdout_diagnostic="<phase-complete>live claim</phase-complete>\n",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 0
+    with pytest.raises(MissingMarkerError):
+        parse_terminal_marker(stdout.getvalue(), stderr.getvalue())
+    assert "live claim" not in stdout.getvalue()
+
+
+def test_codex_high_wrapper_preserves_nonzero_provider_exit_with_valid_result(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    _write_codex_lean_with_output(
+        tmp_path,
+        "<phase-complete>Provider claim.</phase-complete>\n",
+        exit_code=7,
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 7
+    assert parse_terminal_marker(stdout.getvalue(), stderr.getvalue()) == TerminalMarker(
+        MarkerKind.COMPLETE,
+        "Provider claim.",
+    )
 
 
 def test_codex_high_module_entrypoint_helpfully_fails_without_codex(
@@ -379,6 +522,37 @@ def _write_codex_lean(tmp_path: Path, final_message_literal: str) -> Path:
         "from pathlib import Path\n"
         "import sys\n"
         f"Path(sys.argv[-1]).write_text({final_message_literal!r}, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    codex_lean.chmod(0o755)
+    return codex_lean
+
+
+def _write_codex_lean_with_output(
+    tmp_path: Path,
+    final_message: str | None,
+    *,
+    stdout_diagnostic: str = "",
+    stderr_diagnostic: str = "",
+    exit_code: int = 0,
+) -> Path:
+    codex_lean = tmp_path / "codex-lean"
+    final_message_write = (
+        ""
+        if final_message is None
+        else f"Path(sys.argv[-1]).write_text({final_message!r}, encoding='utf-8')\n"
+    )
+    codex_lean.write_text(
+        "#!"
+        f"{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"{final_message_write}"
+        f"sys.stdout.write({stdout_diagnostic!r})\n"
+        "sys.stdout.flush()\n"
+        f"sys.stderr.write({stderr_diagnostic!r})\n"
+        "sys.stderr.flush()\n"
+        f"raise SystemExit({exit_code})\n",
         encoding="utf-8",
     )
     codex_lean.chmod(0o755)

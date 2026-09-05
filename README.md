@@ -419,15 +419,18 @@ inspection found danger-full-access execution and disabled web search and native
 features in this container. Those restrictions are independent of fresh phase execution.
 
 The wrapper runs `codex-lean exec` with non-colored output,
-streams stdout/stderr as Codex runs while filtering live terminal marker blocks and sanitizing
-diagnostic marker text. It captures the final message and re-emits a terminal result only after
-validating that file against the strict framing contract. This keeps the core runner
-provider-agnostic while preserving the runner's exactly-one-result contract. Its child remains in
-the process group created by the core runner, so lifecycle cleanup also reaches the provider
-process. When run directly, the wrapper manages catchable termination signals from child launch
-through its immediate-child cleanup. Pass `--model MODEL` only for an explicit override. Omitting
-it preserves an existing `CODEX_MODEL` value or leaves selection to the external Codex
-configuration.
+streams stdout/stderr as Codex runs, and hides complete live terminal marker blocks. Every
+remaining diagnostic line is prefixed with `[codex] ` and each literal `<` is rendered as `&lt;`,
+so quoted tags, malformed tags, and Markdown fence excerpts remain useful without affecting the
+core parser. Durable transcripts contain this normalized diagnostic representation. The wrapper
+validates the raw final-message file against the strict framing contract, then re-emits only a
+valid result as a separate unprefixed terminal block; missing or invalid final content still causes
+a marker failure. This keeps the core runner provider-agnostic while preserving the runner's
+exactly-one-result contract. Its child remains in the process group created by the core runner, so
+lifecycle cleanup also reaches the provider process. When run directly, the wrapper manages
+catchable termination signals from child launch through its immediate-child cleanup. Use
+`--model MODEL` only for an explicit override; otherwise, the wrapper preserves an existing
+`CODEX_MODEL` value or leaves selection to the external Codex configuration.
 
 A well-framed `phase-complete` result is still the worker's assertion, not automated review or
 user approval. After `runner-complete`, inspect the changes and committed evidence, run final

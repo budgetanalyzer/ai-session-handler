@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from pytest import MonkeyPatch
 
 from ai_session_handler.config import default_state_path, plan_generated_path
 from ai_session_handler.outcomes import read_outcome
@@ -288,6 +289,58 @@ def test_installed_entrypoint_rejects_misleading_marker_output(tmp_path: Path) -
     assert "the operation actually failed" in transcript
 
 
+def test_installed_handler_accepts_normalized_codex_wrapper_diagnostics(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(number=1, title="Wrapper diagnostics"), encoding="utf-8")
+    _write_fake_codex_lean(
+        tmp_path,
+        final_message="<phase-complete>Authoritative result.</phase-complete>\n",
+        stdout_diagnostic="review: <phase-blocked > is malformed\r\n",
+        stderr_diagnostic="```python\nprint('unfinished fence')",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    result = _run_handler(tmp_path, plan_path, shlex.quote(str(_CODEX_WRAPPER)))
+
+    assert result.returncode == 0
+    assert result.stdout == "runner-complete: all phases complete\n"
+    assert result.stderr == ""
+    state = read_state(default_state_path(tmp_path, plan_path))
+    assert state.completed_phase_ids == ("phase-1",)
+    assert state.last_run is not None
+    transcript = Path(state.last_run.transcript_path).read_text(encoding="utf-8")
+    assert "[codex] review: &lt;phase-blocked > is malformed" in transcript
+    assert "[codex] ```python" in transcript
+    assert "[codex] print('unfinished fence')" in transcript
+    assert "<phase-complete>Authoritative result.</phase-complete>" in transcript
+
+
+def test_installed_handler_prefers_nonzero_wrapper_exit_over_valid_result(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(number=1, title="Wrapper failure"), encoding="utf-8")
+    _write_fake_codex_lean(
+        tmp_path,
+        final_message="<phase-complete>Unaccepted claim.</phase-complete>\n",
+        exit_code=9,
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    result = _run_handler(tmp_path, plan_path, shlex.quote(str(_CODEX_WRAPPER)))
+
+    assert result.returncode == EXIT_AGENT_FAILED
+    assert "agent command exited with code 9" in result.stderr
+    state = read_state(default_state_path(tmp_path, plan_path))
+    assert state.completed_phase_ids == ()
+    assert state.last_run is not None
+    assert state.last_run.status is AttemptStatus.AGENT_FAILED
+
+
 def test_installed_entrypoint_timeout_cleans_up_resistant_descendant(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text(_phase(number=1, title="Process cleanup"), encoding="utf-8")
@@ -366,6 +419,32 @@ def _run_handler(
         text=True,
         timeout=10,
     )
+
+
+def _write_fake_codex_lean(
+    tmp_path: Path,
+    *,
+    final_message: str,
+    stdout_diagnostic: str = "",
+    stderr_diagnostic: str = "",
+    exit_code: int = 0,
+) -> Path:
+    codex_lean = tmp_path / "codex-lean"
+    codex_lean.write_text(
+        "#!"
+        f"{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"Path(sys.argv[-1]).write_text({final_message!r}, encoding='utf-8')\n"
+        f"sys.stdout.write({stdout_diagnostic!r})\n"
+        "sys.stdout.flush()\n"
+        f"sys.stderr.write({stderr_diagnostic!r})\n"
+        "sys.stderr.flush()\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    codex_lean.chmod(0o755)
+    return codex_lean
 
 
 def _process_is_running(process_id: int) -> bool:

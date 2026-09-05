@@ -73,14 +73,24 @@ interruption is evidence only and never establishes completion.
 
 Core execution remains provider-agnostic. A wrapper that translates provider-specific output must:
 
-- preserve ordinary useful stdout and stderr diagnostics without emitting recognized result tags;
+- preserve ordinary useful stdout and stderr diagnostics in a representation that cannot affect
+  terminal parsing;
 - handle tags split across reads and multiline blocks without leaking live result blocks;
-- sanitize recognized tag text in diagnostics so it cannot be parsed as a worker result;
+- normalize all diagnostic lines consistently so malformed tags and Markdown fences are also
+  inert;
 - derive the terminal result only from the provider's authoritative final response;
 - validate that response with the framing rules above and emit at most that one normalized result;
 - preserve the provider process exit code and keep its child within the handler-owned process group.
 
-The bundled `ai-session-handler-codex-high` wrapper streams sanitized live output and reads the
-Codex final-message file. It re-emits a result only when that file contains one valid final block.
-If the final message is invalid, it emits the message as sanitized diagnostics, leaving the core
-runner to record marker failure.
+The bundled `ai-session-handler-codex-high` wrapper hides complete result blocks from live output,
+then renders every remaining stdout and stderr diagnostic line with a `[codex] ` prefix and escapes
+each literal `<` as `&lt;`. The prefix keeps backtick and tilde excerpts from changing Markdown
+fence state, while escaping makes exact, truncated, and malformed result tags inert. This
+normalization is present in live output and durable transcripts; line boundaries are preserved,
+and the wrapper terminates an unfinished diagnostic line before emitting a result.
+
+The wrapper validates the raw Codex final-message file against the strict rules above before any
+normalization. It emits only a valid result as a separate, unprefixed terminal block. Missing or
+invalid final content cannot be replaced by a completion claim in live output. Invalid nonempty
+final content is instead rendered through the same diagnostic path, leaving the core runner to
+record marker failure.
