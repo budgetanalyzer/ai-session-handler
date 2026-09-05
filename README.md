@@ -201,8 +201,11 @@ stop-regex match, an execution/streaming exception, or a catchable handler
 interruption, the runner sends SIGTERM to the complete group, waits briefly,
 then sends SIGKILL if any group members remain. It also cleans up ordinary
 descendants that outlive a worker process so inherited pipes cannot hold the
-runner open. The bundled Codex wrapper keeps its child inside the handler-owned
-group and cleans up that child when the wrapper itself fails or is interrupted.
+runner open. SIGINT and SIGTERM are managed from immediately before launch
+through group cleanup, pipe closure, and bounded thread joins. A signal during
+startup or cleanup is deferred until the runner can finish owning and stopping
+the group. The bundled Codex wrapper applies the same lifecycle scope to its
+immediate child while keeping that child inside the handler-owned group.
 See [State and recovery](docs/state-and-recovery.md) for the guarantee and its
 limits.
 
@@ -421,8 +424,10 @@ diagnostic marker text. It captures the final message and re-emits a terminal re
 validating that file against the strict framing contract. This keeps the core runner
 provider-agnostic while preserving the runner's exactly-one-result contract. Its child remains in
 the process group created by the core runner, so lifecycle cleanup also reaches the provider
-process. Pass `--model MODEL` only for an explicit override. Omitting it preserves an existing
-`CODEX_MODEL` value or leaves selection to the external Codex configuration.
+process. When run directly, the wrapper manages catchable termination signals from child launch
+through its immediate-child cleanup. Pass `--model MODEL` only for an explicit override. Omitting
+it preserves an existing `CODEX_MODEL` value or leaves selection to the external Codex
+configuration.
 
 A well-framed `phase-complete` result is still the worker's assertion, not automated review or
 user approval. After `runner-complete`, inspect the changes and committed evidence, run final

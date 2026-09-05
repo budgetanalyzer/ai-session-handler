@@ -8,7 +8,7 @@ matter when interpreting a completed phase or recovering an interrupted attempt.
 
 | Concern | What the handler does | What it does not establish |
 | --- | --- | --- |
-| Worker lifecycle | Launches each selected phase in a new child process and POSIX session/process group. | A new provider conversation. A user-supplied command can resume provider-owned conversation state. |
+| Worker lifecycle | Launches each selected phase in a new child process and POSIX session/process group, and manages catchable termination signals from launch through cleanup. | A new provider conversation. A user-supplied command can resume provider-owned conversation state. |
 | Execution workspace | Sets the child process working directory to the phase's validated `Workspace` and instructs the worker to operate only there. | Filesystem confinement. The handler is not a sandbox, and the command retains whatever filesystem access its OS identity and provider configuration allow. |
 | Phase result | Requires one well-framed terminal result, records the worker's assertion, and advances a completed phase only for `phase-complete`. | Independent verification, correctness, or user approval. |
 | Persistence | Flushes an outcome record before atomically replacing state with a reference to it. Unreferenced outcomes are never adopted as success. | Exactly-once worker execution or atomic workspace edits. A crash can leave partial edits or an unresolved process. |

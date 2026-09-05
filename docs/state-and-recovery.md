@@ -90,8 +90,10 @@ An absent or mismatched identity permits the explicit retry because the operator
 inspection and cleanup are complete. The old attempt is first resolved as `interrupted` with an
 unknown result, then the new prepared attempt and that resolution are written in one replacement.
 
-There is an unavoidable launch-to-identity-record window: the process can start after `prepared`
-is durable and the handler can die before `running` and its process identity are written. Such a
+Catchable SIGINT and SIGTERM handling begins before worker launch. The handler defers delivery
+while it acquires local process-group ownership and records the `running` identity, then responds
+from its lifecycle loop. An abrupt SIGKILL, container failure, or kernel failure can still occur
+after `prepared` is durable and before `running` and its process identity are written. Such a
 record has unknown process identity. Treat it as potentially live and perform manual process
 inspection; the runner will neither guess liveness nor kill a numeric PID for it.
 
@@ -132,7 +134,10 @@ stop-regex match, catchable handler interruption, or execution/streaming excepti
 runner to signal the whole group with SIGTERM, allow a short grace period, and then send SIGKILL
 if members remain. Cleanup is based on the group identity retained at launch, so it still runs if
 the original group leader exits before a resistant descendant. The runner never signals its own
-process group.
+process group. SIGINT and SIGTERM remain managed from immediately before launch through group
+termination, pipe closure, and bounded thread joins. Signals received while ownership is being
+acquired or cleanup is running are deferred so they cannot skip the remaining lifecycle work;
+the first received signal determines the handler's eventual signal-driven exit.
 
 Pipes, transcript handles, and stream threads are closed or joined after process cleanup. Stream
 readers use bounded chunks and a bounded producer queue; cleanup cancellation also releases a
@@ -140,7 +145,9 @@ reader waiting on a full queue after a consumer-side failure. Attempt artifacts 
 their transcript header is written before launch where possible, so an initial artifact IO failure
 does not start a worker. The bundled Codex wrapper does not create a nested session or process
 group: its `codex-lean` child remains reachable by the outer handler's group cleanup, and direct
-wrapper exceptions also terminate that immediate child.
+wrapper exceptions or catchable interruptions also terminate that immediate child. The temporary
+signal masks used while installing and restoring handlers are removed before child launch and
+restored afterward.
 
 This is lifecycle management, not an OS sandbox. It cannot guarantee cleanup if the handler is
 killed with SIGKILL, the container or kernel stops abruptly, or a descendant deliberately

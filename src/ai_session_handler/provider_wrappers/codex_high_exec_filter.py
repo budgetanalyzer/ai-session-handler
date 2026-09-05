@@ -28,6 +28,24 @@ _CHILD_GRACE_SECONDS: Final[float] = 0.5
 _THREAD_JOIN_SECONDS: Final[float] = 1.0
 
 
+class _DeferredTerminationSignals:
+    """Remember the first catchable termination signal until cleanup is safe."""
+
+    def __init__(self) -> None:
+        self._pending_signal: int | None = None
+
+    def handle(self, signal_number: int, frame: FrameType | None) -> None:
+        del frame
+        if self._pending_signal is None:
+            self._pending_signal = signal_number
+
+    def raise_if_pending(self) -> None:
+        if self._pending_signal == signal.SIGINT:
+            _raise_keyboard_interrupt(signal.SIGINT, None)
+        if self._pending_signal is not None:
+            _raise_system_exit(self._pending_signal, None)
+
+
 def _sanitize_markers(text: str) -> str:
     sanitized = text
     for marker_kind in MarkerKind:
@@ -91,85 +109,93 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="ai-session-handler-codex-") as temp_dir:
         final_message_path = Path(temp_dir) / "final-message.txt"
-        process = subprocess.Popen(
-            [
-                "codex-lean",
-                "exec",
-                "--color",
-                "never",
-                "--output-last-message",
-                str(final_message_path),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            encoding="utf-8",
-            errors="replace",
-        )
+        process: subprocess.Popen[str] | None = None
         threads: list[threading.Thread] = []
-        try:
-            assert process.stdin is not None
-            assert process.stdout is not None
-            assert process.stderr is not None
-            failures: Queue[BaseException] = Queue()
-            threads = [
-                threading.Thread(target=_write_stdin, args=(process.stdin, prompt), daemon=True),
-                threading.Thread(
-                    target=_stream_filtered_output,
-                    args=(process.stdout, sys.stdout, failures),
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_stream_filtered_output,
-                    args=(process.stderr, sys.stderr, failures),
-                    daemon=True,
-                ),
-            ]
-            for thread in threads:
-                thread.start()
+        with _managed_termination_signals() as termination_signals:
+            try:
+                process = subprocess.Popen(
+                    [
+                        "codex-lean",
+                        "exec",
+                        "--color",
+                        "never",
+                        "--output-last-message",
+                        str(final_message_path),
+                    ],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                assert process.stdin is not None
+                assert process.stdout is not None
+                assert process.stderr is not None
+                failures: Queue[BaseException] = Queue()
+                candidate_threads = [
+                    threading.Thread(
+                        target=_write_stdin,
+                        args=(process.stdin, prompt),
+                        daemon=True,
+                    ),
+                    threading.Thread(
+                        target=_stream_filtered_output,
+                        args=(process.stdout, sys.stdout, failures),
+                        daemon=True,
+                    ),
+                    threading.Thread(
+                        target=_stream_filtered_output,
+                        args=(process.stderr, sys.stderr, failures),
+                        daemon=True,
+                    ),
+                ]
+                for thread in candidate_threads:
+                    thread.start()
+                    threads.append(thread)
 
-            with _managed_termination_signals():
                 while process.poll() is None:
+                    termination_signals.raise_if_pending()
                     try:
                         failure = failures.get(timeout=0.05)
                     except Empty:
                         continue
                     raise OSError(f"failed streaming Codex output: {failure}") from failure
 
-            return_code = process.wait()
-            _join_threads(threads)
-            try:
-                failure = failures.get_nowait()
-            except Empty:
-                pass
-            else:
-                raise OSError(f"failed streaming Codex output: {failure}") from failure
+                return_code = process.wait()
+                _join_threads(threads)
+                try:
+                    failure = failures.get_nowait()
+                except Empty:
+                    pass
+                else:
+                    raise OSError(f"failed streaming Codex output: {failure}") from failure
 
-            try:
-                final_message = final_message_path.read_text(encoding="utf-8")
-            except OSError:
-                final_message = ""
+                try:
+                    final_message = final_message_path.read_text(encoding="utf-8")
+                except OSError:
+                    final_message = ""
 
-            try:
-                marker = parse_terminal_marker(final_message)
-            except MarkerParseError:
-                marker = None
+                try:
+                    marker = parse_terminal_marker(final_message)
+                except MarkerParseError:
+                    marker = None
 
-            if marker is not None:
-                tag = marker.kind.value
-                sys.stdout.write(f"\n<{tag}>{marker.text}</{tag}>\n")
-            elif final_message.strip():
-                sys.stdout.write(_sanitize_markers(final_message))
-                if not final_message.endswith("\n"):
-                    sys.stdout.write("\n")
+                if marker is not None:
+                    tag = marker.kind.value
+                    sys.stdout.write(f"\n<{tag}>{marker.text}</{tag}>\n")
+                elif final_message.strip():
+                    sys.stdout.write(_sanitize_markers(final_message))
+                    if not final_message.endswith("\n"):
+                        sys.stdout.write("\n")
 
-            return return_code
-        finally:
-            _terminate_child(process)
-            _close_process_pipes(process)
-            _join_threads(threads)
+                return return_code
+            finally:
+                if process is not None:
+                    _terminate_child(process)
+                    _close_process_pipes(process)
+                _join_threads(threads)
 
 
 def _terminate_child(process: subprocess.Popen[str]) -> None:
@@ -198,22 +224,30 @@ def _join_threads(threads: Sequence[threading.Thread]) -> None:
 
 
 @contextmanager
-def _managed_termination_signals() -> Iterator[None]:
+def _managed_termination_signals() -> Iterator[_DeferredTerminationSignals]:
+    deferred = _DeferredTerminationSignals()
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield deferred
         return
 
     handled_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
     previous_handlers = {
         signal_number: signal.getsignal(signal_number) for signal_number in handled_signals
     }
     try:
-        signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
-        signal.signal(signal.SIGTERM, _raise_system_exit)
-        yield
+        for signal_number in handled_signals:
+            signal.signal(signal_number, deferred.handle)
     finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    try:
+        yield deferred
+    finally:
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
         for signal_number, previous_handler in previous_handlers.items():
             signal.signal(signal_number, previous_handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        deferred.raise_if_pending()
 
 
 def _raise_keyboard_interrupt(signal_number: int, frame: FrameType | None) -> NoReturn:

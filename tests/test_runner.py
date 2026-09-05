@@ -11,7 +11,8 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from uuid import UUID
 
 import pytest
 
+from ai_session_handler import runner as runner_module
 from ai_session_handler.config import default_state_path
 from ai_session_handler.outcomes import read_outcome
 from ai_session_handler.phases import PlanParseError, read_plan_snapshot
@@ -44,6 +46,7 @@ from ai_session_handler.state import (
     ActiveAttemptStatus,
     AttemptStatus,
     PlanHashMismatchError,
+    ProcessIdentity,
     RunnerState,
     StopReason,
     read_state,
@@ -570,6 +573,223 @@ def test_catchable_signal_records_interruption_and_cleans_up_worker_group(
         with suppress(subprocess.TimeoutExpired):
             handler.wait(timeout=1)
         _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+@pytest.mark.parametrize("interrupt_signal", [signal.SIGINT, signal.SIGTERM])
+def test_signal_after_running_attempt_persistence_cleans_up_worker_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_signal: signal.Signals,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="while True:\n    time.sleep(1)\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    sent_signal = False
+
+    def persist_then_interrupt(path: Path, state: RunnerState) -> None:
+        nonlocal sent_signal
+        write_state(path, state)
+        attempt = state.active_attempt
+        if sent_signal or attempt is None or attempt.status is not ActiveAttemptStatus.RUNNING:
+            return
+        _wait_for_paths_without_process(child_pid_path, grandchild_pid_path)
+        sent_signal = True
+        os.kill(os.getpid(), interrupt_signal)
+
+    monkeypatch.setattr(runner_module, "write_state", persist_then_interrupt)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    try:
+        with _outer_deadline():
+            if interrupt_signal is signal.SIGINT:
+                with pytest.raises(KeyboardInterrupt):
+                    run_phases(options)
+            else:
+                with pytest.raises(SystemExit) as raised:
+                    run_phases(options)
+                assert raised.value.code == 128 + signal.SIGTERM
+
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+        state = read_state(options.state_path)
+        assert state.active_attempt is None
+        assert state.stop is not None
+        assert state.stop.reason is StopReason.INTERRUPTED
+        assert signal.getsignal(signal.SIGINT) is previous_sigint
+        assert signal.getsignal(signal.SIGTERM) is previous_sigterm
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_failed_interruption_persistence_retains_running_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="while True:\n    time.sleep(1)\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    sent_signal = False
+
+    def interrupt_then_fail_transition(path: Path, state: RunnerState) -> None:
+        nonlocal sent_signal
+        attempt = state.active_attempt
+        if state.stop is not None and state.stop.reason is StopReason.INTERRUPTED:
+            raise OSError("interruption state replacement failed")
+        write_state(path, state)
+        if sent_signal or attempt is None or attempt.status is not ActiveAttemptStatus.RUNNING:
+            return
+        _wait_for_paths_without_process(child_pid_path, grandchild_pid_path)
+        sent_signal = True
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(runner_module, "write_state", interrupt_then_fail_transition)
+
+    try:
+        with _outer_deadline(), pytest.raises(SystemExit) as raised:
+            run_phases(options)
+
+        assert raised.value.code == 128 + signal.SIGTERM
+        durable = read_state(options.state_path)
+        assert durable.active_attempt is not None
+        assert durable.active_attempt.status is ActiveAttemptStatus.RUNNING
+        assert durable.stop is None
+        assert durable.committed_outcomes == ()
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_repeated_signals_during_post_poll_cleanup_do_not_skip_group_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="print('<phase-complete>Finished.</phase-complete>', flush=True)\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    original_terminate = runner_module._terminate_process_group
+    interrupted_cleanup = False
+
+    def interrupt_cleanup(process: subprocess.Popen[bytes], process_group_id: int) -> None:
+        nonlocal interrupted_cleanup
+        if not interrupted_cleanup:
+            interrupted_cleanup = True
+            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), signal.SIGINT)
+        original_terminate(process, process_group_id)
+
+    monkeypatch.setattr(runner_module, "_terminate_process_group", interrupt_cleanup)
+
+    try:
+        with _outer_deadline(), pytest.raises(SystemExit) as raised:
+            run_phases(options)
+
+        assert raised.value.code == 128 + signal.SIGTERM
+        assert interrupted_cleanup
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+        state = read_state(options.state_path)
+        assert state.stop is not None
+        assert state.stop.reason is StopReason.INTERRUPTED
+        assert state.completed_phase_ids == ()
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_thread_start_failure_joins_only_started_threads_and_cleans_up_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    phase = read_plan_snapshot(plan_path).phases[0]
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n    time.sleep(1)\n",
+    )
+    original_start = threading.Thread.start
+    starts = 0
+    worker_pid: int | None = None
+
+    def fail_second_start(thread: threading.Thread) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("thread start failed")
+        original_start(thread)
+
+    def remember_process(process_identity: ProcessIdentity | None) -> None:
+        nonlocal worker_pid
+        assert process_identity is not None
+        worker_pid = process_identity.pid
+
+    monkeypatch.setattr(threading.Thread, "start", fail_second_start)
+
+    try:
+        with _outer_deadline(), pytest.raises(RuntimeError, match="thread start failed"):
+            run_agent_process(
+                agent_cmd=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                prompt_text="prompt",
+                prompt_path=tmp_path / "prompt.txt",
+                plan_workspace_path=tmp_path,
+                execution_workspace_path=tmp_path,
+                run_id="partial-thread-start",
+                transcript_file=tmp_path / "transcript.txt",
+                state_file=tmp_path / "state.json",
+                phase=phase,
+                plan_path=plan_path,
+                timeout_seconds=3,
+                stop_patterns=(),
+                process_started=remember_process,
+            )
+
+        assert worker_pid is not None
+        assert not _process_is_running(worker_pid)
+    finally:
+        if worker_pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_worker_does_not_inherit_signal_mask_used_during_handler_setup(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import signal\n"
+        "blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())\n"
+        "assert signal.SIGINT not in blocked\n"
+        "assert signal.SIGTERM not in blocked\n"
+        "print('<phase-complete>Signals unblocked.</phase-complete>')\n",
+    )
+
+    with _outer_deadline():
+        outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_OK
 
 
 def test_invalid_stop_regex_does_not_write_state(tmp_path: Path) -> None:
@@ -1469,3 +1689,28 @@ def _wait_for_paths(process: subprocess.Popen[str], *paths: Path) -> None:
         if time.monotonic() >= deadline:
             pytest.fail("worker tree did not report readiness before the outer deadline")
         time.sleep(0.01)
+
+
+def _wait_for_paths_without_process(*paths: Path) -> None:
+    deadline = time.monotonic() + 3
+    while not all(path.exists() for path in paths):
+        if time.monotonic() >= deadline:
+            pytest.fail("worker tree did not report readiness before the outer deadline")
+        time.sleep(0.01)
+
+
+@contextmanager
+def _outer_deadline(seconds: float = 8.0) -> Iterator[None]:
+    def expire(signal_number: int, frame: object) -> None:
+        del signal_number, frame
+        raise TimeoutError("subprocess test exceeded its outer deadline")
+
+    previous_handler = signal.signal(signal.SIGALRM, expire)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)

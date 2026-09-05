@@ -166,6 +166,24 @@ class AgentLaunchError(OSError):
     """Raised when a prepared attempt cannot launch its worker command."""
 
 
+class _DeferredTerminationSignals:
+    """Remember the first catchable termination signal until cleanup is safe."""
+
+    def __init__(self) -> None:
+        self._pending_signal: int | None = None
+
+    def handle(self, signal_number: int, frame: FrameType | None) -> None:
+        del frame
+        if self._pending_signal is None:
+            self._pending_signal = signal_number
+
+    def raise_if_pending(self) -> None:
+        if self._pending_signal == signal.SIGINT:
+            _raise_keyboard_interrupt(signal.SIGINT, None)
+        if self._pending_signal is not None:
+            _raise_system_exit(self._pending_signal, None)
+
+
 def run_phases(options: RunOptions) -> RunnerOutcome:
     """Run selected plan phases and persist state transitions."""
     if options.max_phases is not None and options.max_phases < 1:
@@ -466,51 +484,53 @@ def run_agent_process(
     with transcript:
         transcript.write(render_transcript_header(header))
         transcript.flush()
-        try:
+        with _managed_termination_signals() as termination_signals:
             try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=execution_workspace_path,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                    start_new_session=True,
-                )
-            except OSError as error:
-                raise AgentLaunchError(str(error)) from error
-            process_group_id = process.pid
-            if process_started is not None:
-                process_started(_read_process_identity(process.pid))
-            assert process.stdin is not None
-            assert process.stdout is not None
-            assert process.stderr is not None
-            reader_threads = [
-                threading.Thread(
-                    target=_read_stream,
-                    args=("stdout", process.stdout, output_queue, reader_cancel),
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_read_stream,
-                    args=("stderr", process.stderr, output_queue, reader_cancel),
-                    daemon=True,
-                ),
-            ]
-            threads = [
-                *reader_threads,
-                threading.Thread(
-                    target=_write_stdin,
-                    args=(process.stdin, prompt_text),
-                    daemon=True,
-                ),
-            ]
-            for thread in threads:
-                thread.start()
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=execution_workspace_path,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        shell=False,
+                        start_new_session=True,
+                    )
+                except OSError as error:
+                    raise AgentLaunchError(str(error)) from error
+                process_group_id = process.pid
+                if process_started is not None:
+                    process_started(_read_process_identity(process.pid))
+                assert process.stdin is not None
+                assert process.stdout is not None
+                assert process.stderr is not None
+                reader_threads = [
+                    threading.Thread(
+                        target=_read_stream,
+                        args=("stdout", process.stdout, output_queue, reader_cancel),
+                        daemon=True,
+                    ),
+                    threading.Thread(
+                        target=_read_stream,
+                        args=("stderr", process.stderr, output_queue, reader_cancel),
+                        daemon=True,
+                    ),
+                ]
+                candidate_threads = [
+                    *reader_threads,
+                    threading.Thread(
+                        target=_write_stdin,
+                        args=(process.stdin, prompt_text),
+                        daemon=True,
+                    ),
+                ]
+                for thread in candidate_threads:
+                    thread.start()
+                    threads.append(thread)
 
-            timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
-            with _managed_termination_signals():
+                timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
                 while True:
+                    termination_signals.raise_if_pending()
                     drained = _drain_output_queue(
                         output_queue,
                         transcript,
@@ -541,41 +561,43 @@ def run_agent_process(
                     if process.poll() is not None:
                         break
 
-            return_code = process.wait()
-            _terminate_process_group(process, process_group_id)
-            while any(thread.is_alive() for thread in reader_threads) or not output_queue.empty():
-                drained = _drain_output_queue(
-                    output_queue,
-                    transcript,
-                    regex_parts,
-                    marker_accumulators,
-                    stdout_target,
-                    stderr_target,
-                    display_filters,
-                    wait_for_first=True,
-                )
-                output_received = output_received or drained
-                if stop_reason is None and drained:
-                    matched_pattern = _first_matching_pattern(stop_patterns, regex_parts)
-                    if matched_pattern is not None:
-                        stop_reason = StopReason.STOP_REGEX
-                        stop_message = f"output matched stop regex: {matched_pattern.pattern}"
-                if not drained:
-                    _join_threads(reader_threads, timeout=0.01)
-            _finish_display_filters(display_filters, stdout_target, stderr_target)
-            if not output_received:
-                transcript.write(
-                    f"[runner] process exited with code {return_code} "
-                    "without stdout/stderr output\n"
-                )
-            lifecycle_complete = True
-        finally:
-            reader_cancel.set()
-            if process is not None and process_group_id is not None and not lifecycle_complete:
+                return_code = process.wait()
                 _terminate_process_group(process, process_group_id)
-            if process is not None:
-                _close_process_pipes(process)
-            _join_threads(threads)
+                while (
+                    any(thread.is_alive() for thread in reader_threads) or not output_queue.empty()
+                ):
+                    drained = _drain_output_queue(
+                        output_queue,
+                        transcript,
+                        regex_parts,
+                        marker_accumulators,
+                        stdout_target,
+                        stderr_target,
+                        display_filters,
+                        wait_for_first=True,
+                    )
+                    output_received = output_received or drained
+                    if stop_reason is None and drained:
+                        matched_pattern = _first_matching_pattern(stop_patterns, regex_parts)
+                        if matched_pattern is not None:
+                            stop_reason = StopReason.STOP_REGEX
+                            stop_message = f"output matched stop regex: {matched_pattern.pattern}"
+                    if not drained:
+                        _join_threads(reader_threads, timeout=0.01)
+                _finish_display_filters(display_filters, stdout_target, stderr_target)
+                if not output_received:
+                    transcript.write(
+                        f"[runner] process exited with code {return_code} "
+                        "without stdout/stderr output\n"
+                    )
+                lifecycle_complete = True
+            finally:
+                reader_cancel.set()
+                if process is not None and process_group_id is not None and not lifecycle_complete:
+                    _terminate_process_group(process, process_group_id)
+                if process is not None:
+                    _close_process_pipes(process)
+                _join_threads(threads)
 
     finished_at = format_utc_timestamp()
     terminal_marker: TerminalMarker | None = None
@@ -1195,22 +1217,30 @@ def _join_threads(
 
 
 @contextmanager
-def _managed_termination_signals() -> Iterator[None]:
+def _managed_termination_signals() -> Iterator[_DeferredTerminationSignals]:
+    deferred = _DeferredTerminationSignals()
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield deferred
         return
 
     handled_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
     previous_handlers = {
         signal_number: signal.getsignal(signal_number) for signal_number in handled_signals
     }
     try:
-        signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
-        signal.signal(signal.SIGTERM, _raise_system_exit)
-        yield
+        for signal_number in handled_signals:
+            signal.signal(signal_number, deferred.handle)
     finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    try:
+        yield deferred
+    finally:
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
         for signal_number, previous_handler in previous_handlers.items():
             signal.signal(signal_number, previous_handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        deferred.raise_if_pending()
 
 
 def _raise_keyboard_interrupt(signal_number: int, frame: FrameType | None) -> NoReturn:
