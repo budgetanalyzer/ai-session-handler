@@ -27,6 +27,18 @@ timeout or controlled stop. A nonzero exit, timeout, or stop-regex result takes 
 completion block. Terminal blocks remain in the durable transcript but are hidden from live output;
 the runner prints the recorded outcome after updating state.
 
+The runner consumes both streams as bounded, incrementally decoded UTF-8 chunks. Marker framing is
+tracked incrementally per stream, so ordinary diagnostics do not also remain in memory solely for
+result parsing; the complete untruncated output remains in the transcript. Queue draining is
+budgeted so sustained worker output cannot indefinitely postpone timeout and stop checks, and all
+normally produced chunks are drained to the transcript before final marker validation.
+
+Stop regexes are the deliberate exception to bounded output retention. Their documented semantics
+search the full combined stdout/stderr history, including output received during the final drain.
+When configured, that history remains in memory and is searched again after new output. Very large
+histories and arbitrary Python regular expressions may therefore have significant memory or CPU
+cost, and regex execution itself has no time bound.
+
 These outcomes are worker assertions. `phase-complete` advances execution history, but it is not
 independent verification or user approval. The user remains responsible for reviewing the changes
 and validation evidence and for final semantic acceptance.

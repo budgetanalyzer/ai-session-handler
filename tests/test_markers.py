@@ -10,7 +10,9 @@ from ai_session_handler.markers import (
     MissingMarkerError,
     MultipleMarkersError,
     TerminalMarker,
+    TerminalMarkerAccumulator,
     TerminalMarkerFilter,
+    parse_accumulated_terminal_marker,
     parse_terminal_marker,
 )
 
@@ -47,6 +49,34 @@ def test_parse_marker_from_stderr() -> None:
         "ordinary stdout\n",
         "diagnostic\n<phase-blocked>Need credentials.</phase-blocked>\n",
     ) == TerminalMarker(kind=MarkerKind.BLOCKED, text="Need credentials.")
+
+
+def test_incremental_parser_handles_split_tags_and_unicode() -> None:
+    stdout = TerminalMarkerAccumulator()
+    stderr = TerminalMarkerAccumulator()
+    for chunk in (
+        "verbose ☃ diagnostics\n<phase-",
+        "complete>Changed caf",
+        "é.txt.\nTests pass.</phase-com",
+        "plete>\n",
+    ):
+        stdout.feed(chunk)
+
+    assert parse_accumulated_terminal_marker(stdout, stderr) == TerminalMarker(
+        kind=MarkerKind.COMPLETE,
+        text="Changed café.txt.\nTests pass.",
+    )
+
+
+def test_incremental_parser_discards_unbounded_diagnostics() -> None:
+    accumulator = TerminalMarkerAccumulator()
+
+    for _ in range(1000):
+        accumulator.feed("diagnostic output without protocol text\n")
+
+    assert repr(accumulator) == "TerminalMarkerAccumulator()"
+    with pytest.raises(MissingMarkerError):
+        parse_accumulated_terminal_marker(accumulator, TerminalMarkerAccumulator())
 
 
 def test_missing_marker_is_rejected() -> None:

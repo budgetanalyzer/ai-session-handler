@@ -168,11 +168,13 @@ cooperating handler invocations, and release after a crash does not establish th
 is complete or safe to retry. See [State and recovery](docs/state-and-recovery.md) for lock and
 recovery details.
 
-The runner streams child stdout and stderr to the same streams while also
-capturing both in the transcript and retaining their identities for result validation. Terminal
-marker blocks are captured for parsing but hidden from the live console; interleaving between the
-independent pipes cannot manufacture a result. A nonzero exit, timeout, or controlled stop
-overrides a completion marker. The CLI prints the final phase result once after state is updated.
+The runner reads child stdout and stderr in bounded chunks through a bounded queue, streams them to
+the same live streams, and writes the complete output to the transcript. It incrementally retains
+only terminal-protocol state and result text for marker validation, including each stream's
+identity; ordinary diagnostic history is not duplicated in memory. Terminal marker blocks remain
+in the transcript but are hidden from the live console, and interleaving between the independent
+pipes cannot manufacture a result. A nonzero exit, timeout, or controlled stop overrides a
+completion marker. The CLI prints the final phase result once after state is updated.
 Runner-owned errors, including invalid inputs and failed agent outcomes, are printed to stderr.
 Failed agent outcomes also print
 the transcript path and recent transcript output for debugging. Transcript
@@ -195,6 +197,13 @@ the complete transcript, parsing terminal markers, and printing the final phase
 result. This is useful when invoking the handler from another agent session,
 where streamed child output would otherwise consume the parent session's
 context.
+
+Configured stop regexes intentionally keep their full-history meaning across combined stdout and
+stderr. When at least one is enabled, the runner therefore retains all output for the attempt in
+memory and searches the growing history after new chunks arrive and after the final drain. Large
+outputs or expensive Python regular expressions can consume substantial memory and CPU; the
+bounded queue keeps lifecycle checks responsive between drain batches but does not bound regex
+execution itself. Without stop regexes, the durable transcript is the full diagnostic log.
 
 ## Commands
 

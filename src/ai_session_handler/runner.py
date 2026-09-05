@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import math
 import os
 import re
@@ -19,19 +20,22 @@ from datetime import UTC, datetime
 from errno import EACCES, EAGAIN
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from types import FrameType
-from typing import Final, NoReturn, TextIO
+from typing import BinaryIO, Final, NoReturn, TextIO
 from uuid import uuid4
 
 from ai_session_handler.artifacts import open_text_exclusively
 from ai_session_handler.markers import (
     InvalidMarkerError,
     MarkerKind,
+    MarkerParseError,
     MissingMarkerError,
     MultipleMarkersError,
+    TerminalMarker,
+    TerminalMarkerAccumulator,
     TerminalMarkerFilter,
-    parse_terminal_marker,
+    parse_accumulated_terminal_marker,
 )
 from ai_session_handler.outcomes import (
     OutcomeArtifacts,
@@ -79,6 +83,10 @@ _SUPPORTED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
 )
 _PROCESS_GROUP_GRACE_SECONDS: Final[float] = 0.5
 _THREAD_JOIN_SECONDS: Final[float] = 1.0
+_OUTPUT_CHUNK_SIZE: Final[int] = 16 * 1024
+_OUTPUT_QUEUE_SIZE: Final[int] = 64
+_OUTPUT_DRAIN_LIMIT: Final[int] = 16
+_OUTPUT_WAIT_SECONDS: Final[float] = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,9 +119,9 @@ class ProcessResult:
     """Captured process execution details."""
 
     exit_code: int
-    combined_output: str
-    stdout_output: str
-    stderr_output: str
+    terminal_marker: TerminalMarker | None
+    marker_error: MarkerParseError | None
+    output_received: bool
     started_at: str
     finished_at: str
     transcript_path: Path
@@ -418,9 +426,14 @@ def run_agent_process(
         transcript_file=transcript_file,
         state_file=state_file,
     )
-    output_queue: Queue[_OutputQueueItem] = Queue()
-    combined_parts: list[str] = []
-    stream_parts: dict[str, list[str]] = {"stdout": [], "stderr": []}
+    output_queue: Queue[_OutputQueueItem] = Queue(maxsize=_OUTPUT_QUEUE_SIZE)
+    reader_cancel = threading.Event()
+    regex_parts: list[str] | None = [] if stop_patterns else None
+    marker_accumulators = {
+        "stdout": TerminalMarkerAccumulator(),
+        "stderr": TerminalMarkerAccumulator(),
+    }
+    output_received = False
     transcript = open_text_exclusively(transcript_file)
     stdout_target = None if quiet else (sys.stdout if stdout is None else stdout)
     stderr_target = None if quiet else (sys.stderr if stderr is None else stderr)
@@ -441,9 +454,10 @@ def run_agent_process(
         agent_cmd=agent_cmd,
         rendered_command=command,
     )
-    process: subprocess.Popen[str] | None = None
+    process: subprocess.Popen[bytes] | None = None
     process_group_id: int | None = None
     threads: list[threading.Thread] = []
+    reader_threads: list[threading.Thread] = []
     lifecycle_complete = False
     stop_reason: StopReason | None = None
     stop_message: str | None = None
@@ -460,9 +474,6 @@ def run_agent_process(
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     shell=False,
                     start_new_session=True,
                 )
@@ -474,17 +485,20 @@ def run_agent_process(
             assert process.stdin is not None
             assert process.stdout is not None
             assert process.stderr is not None
+            reader_threads = [
+                threading.Thread(
+                    target=_read_stream,
+                    args=("stdout", process.stdout, output_queue, reader_cancel),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_read_stream,
+                    args=("stderr", process.stderr, output_queue, reader_cancel),
+                    daemon=True,
+                ),
+            ]
             threads = [
-                threading.Thread(
-                    target=_read_stream,
-                    args=("stdout", process.stdout, output_queue),
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_read_stream,
-                    args=("stderr", process.stderr, output_queue),
-                    daemon=True,
-                ),
+                *reader_threads,
                 threading.Thread(
                     target=_write_stdin,
                     args=(process.stdin, prompt_text),
@@ -497,17 +511,19 @@ def run_agent_process(
             timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
             with _managed_termination_signals():
                 while True:
-                    _drain_output_queue(
+                    drained = _drain_output_queue(
                         output_queue,
                         transcript,
-                        combined_parts,
-                        stream_parts,
+                        regex_parts,
+                        marker_accumulators,
                         stdout_target,
                         stderr_target,
                         display_filters,
+                        wait_for_first=True,
                     )
-                    if stop_reason is None:
-                        matched_pattern = _first_matching_pattern(stop_patterns, combined_parts)
+                    output_received = output_received or drained
+                    if stop_reason is None and drained:
+                        matched_pattern = _first_matching_pattern(stop_patterns, regex_parts)
                         if matched_pattern is not None:
                             stop_reason = StopReason.STOP_REGEX
                             stop_message = f"output matched stop regex: {matched_pattern.pattern}"
@@ -525,40 +541,36 @@ def run_agent_process(
                     if process.poll() is not None:
                         break
 
-                    try:
-                        item = output_queue.get(timeout=0.05)
-                    except Empty:
-                        continue
-                    _write_stream_item(
-                        item,
-                        transcript,
-                        combined_parts,
-                        stream_parts,
-                        stdout_target,
-                        stderr_target,
-                        display_filters,
-                    )
-
             return_code = process.wait()
             _terminate_process_group(process, process_group_id)
-            _join_threads(threads)
-            _drain_output_queue(
-                output_queue,
-                transcript,
-                combined_parts,
-                stream_parts,
-                stdout_target,
-                stderr_target,
-                display_filters,
-            )
+            while any(thread.is_alive() for thread in reader_threads) or not output_queue.empty():
+                drained = _drain_output_queue(
+                    output_queue,
+                    transcript,
+                    regex_parts,
+                    marker_accumulators,
+                    stdout_target,
+                    stderr_target,
+                    display_filters,
+                    wait_for_first=True,
+                )
+                output_received = output_received or drained
+                if stop_reason is None and drained:
+                    matched_pattern = _first_matching_pattern(stop_patterns, regex_parts)
+                    if matched_pattern is not None:
+                        stop_reason = StopReason.STOP_REGEX
+                        stop_message = f"output matched stop regex: {matched_pattern.pattern}"
+                if not drained:
+                    _join_threads(reader_threads, timeout=0.01)
             _finish_display_filters(display_filters, stdout_target, stderr_target)
-            if not combined_parts:
+            if not output_received:
                 transcript.write(
                     f"[runner] process exited with code {return_code} "
                     "without stdout/stderr output\n"
                 )
             lifecycle_complete = True
         finally:
+            reader_cancel.set()
             if process is not None and process_group_id is not None and not lifecycle_complete:
                 _terminate_process_group(process, process_group_id)
             if process is not None:
@@ -566,11 +578,19 @@ def run_agent_process(
             _join_threads(threads)
 
     finished_at = format_utc_timestamp()
+    terminal_marker: TerminalMarker | None = None
+    marker_error: MarkerParseError | None = None
+    try:
+        terminal_marker = parse_accumulated_terminal_marker(
+            marker_accumulators["stdout"], marker_accumulators["stderr"]
+        )
+    except MarkerParseError as error:
+        marker_error = error
     return ProcessResult(
         exit_code=return_code,
-        combined_output="".join(combined_parts),
-        stdout_output="".join(stream_parts["stdout"]),
-        stderr_output="".join(stream_parts["stderr"]),
+        terminal_marker=terminal_marker,
+        marker_error=marker_error,
+        output_received=output_received,
         started_at=process_started_at,
         finished_at=finished_at,
         transcript_path=transcript_file,
@@ -692,14 +712,16 @@ def apply_process_result(
     if result.exit_code != 0:
         return _stopped_runner_failure(state, phase, result, StopReason.AGENT_FAILED)
 
-    try:
-        marker = parse_terminal_marker(result.stdout_output, result.stderr_output)
-    except MissingMarkerError:
+    marker_error = result.marker_error
+    if isinstance(marker_error, MissingMarkerError):
         return _stopped_runner_failure(state, phase, result, StopReason.MISSING_MARKER)
-    except MultipleMarkersError:
+    if isinstance(marker_error, MultipleMarkersError):
         return _stopped_runner_failure(state, phase, result, StopReason.MULTIPLE_MARKERS)
-    except InvalidMarkerError:
+    if isinstance(marker_error, InvalidMarkerError):
         return _stopped_runner_failure(state, phase, result, StopReason.INVALID_MARKER)
+    marker = result.terminal_marker
+    if marker is None:
+        raise ValueError("process result has neither a terminal marker nor a marker error")
 
     if marker.kind is MarkerKind.COMPLETE:
         completed = state.completed_phase_ids
@@ -940,22 +962,58 @@ def _failure_message(reason: StopReason, process_exit_code: int) -> str:
 
 def _read_stream(
     stream_name: str,
-    stream: TextIO,
+    stream: BinaryIO,
     output_queue: Queue[_OutputQueueItem],
+    cancel: threading.Event,
 ) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     try:
-        while True:
-            chunk = stream.readline()
-            if chunk == "":
+        while not cancel.is_set():
+            raw_chunk = os.read(stream.fileno(), _OUTPUT_CHUNK_SIZE)
+            if not raw_chunk:
                 break
-            output_queue.put(_StreamItem(stream_name=stream_name, text=chunk))
+            chunk = decoder.decode(raw_chunk)
+            if not chunk:
+                continue
+            if not _put_output_item(
+                output_queue,
+                _StreamItem(stream_name=stream_name, text=chunk),
+                cancel,
+            ):
+                return
+        final_chunk = decoder.decode(b"", final=True)
+        if final_chunk:
+            _put_output_item(
+                output_queue,
+                _StreamItem(stream_name=stream_name, text=final_chunk),
+                cancel,
+            )
     except BaseException as error:
-        output_queue.put(_StreamFailure(stream_name=stream_name, error=error))
+        if not cancel.is_set():
+            _put_output_item(
+                output_queue,
+                _StreamFailure(stream_name=stream_name, error=error),
+                cancel,
+            )
 
 
-def _write_stdin(stream: TextIO, prompt_text: str) -> None:
+def _put_output_item(
+    output_queue: Queue[_OutputQueueItem],
+    item: _OutputQueueItem,
+    cancel: threading.Event,
+) -> bool:
+    while not cancel.is_set():
+        try:
+            output_queue.put(item, timeout=_OUTPUT_WAIT_SECONDS)
+        except Full:
+            continue
+        return True
+    return False
+
+
+def _write_stdin(stream: BinaryIO, prompt_text: str) -> None:
     try:
-        stream.write(prompt_text)
+        stream.write(prompt_text.encode("utf-8"))
     except (BrokenPipeError, OSError, ValueError):
         return
     finally:
@@ -966,41 +1024,50 @@ def _write_stdin(stream: TextIO, prompt_text: str) -> None:
 def _drain_output_queue(
     output_queue: Queue[_OutputQueueItem],
     transcript: TextIO,
-    combined_parts: list[str],
-    stream_parts: dict[str, list[str]],
+    regex_parts: list[str] | None,
+    marker_accumulators: dict[str, TerminalMarkerAccumulator],
     stdout: TextIO | None,
     stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
-) -> None:
-    while True:
+    *,
+    wait_for_first: bool = False,
+) -> bool:
+    drained = False
+    for index in range(_OUTPUT_DRAIN_LIMIT):
         try:
-            item = output_queue.get_nowait()
+            if wait_for_first and index == 0:
+                item = output_queue.get(timeout=_OUTPUT_WAIT_SECONDS)
+            else:
+                item = output_queue.get_nowait()
         except Empty:
-            return
+            break
         _write_stream_item(
             item,
             transcript,
-            combined_parts,
-            stream_parts,
+            regex_parts,
+            marker_accumulators,
             stdout,
             stderr,
             display_filters,
         )
+        drained = True
+    return drained
 
 
 def _write_stream_item(
     item: _OutputQueueItem,
     transcript: TextIO,
-    combined_parts: list[str],
-    stream_parts: dict[str, list[str]],
+    regex_parts: list[str] | None,
+    marker_accumulators: dict[str, TerminalMarkerAccumulator],
     stdout: TextIO | None,
     stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
     if isinstance(item, _StreamFailure):
         raise OSError(f"failed reading agent {item.stream_name}: {item.error}") from item.error
-    combined_parts.append(item.text)
-    stream_parts[item.stream_name].append(item.text)
+    if regex_parts is not None:
+        regex_parts.append(item.text)
+    marker_accumulators[item.stream_name].feed(item.text)
     target = stdout if item.stream_name == "stdout" else stderr
     if target is not None:
         display_text = display_filters[item.stream_name].filter(item.text)
@@ -1027,7 +1094,7 @@ def _finish_display_filters(
 
 def _first_matching_pattern(
     stop_patterns: Sequence[re.Pattern[str]],
-    combined_parts: Sequence[str],
+    combined_parts: Sequence[str] | None,
 ) -> re.Pattern[str] | None:
     if not stop_patterns or not combined_parts:
         return None
@@ -1048,7 +1115,7 @@ def _compile_stop_patterns(stop_on_regex: Sequence[str]) -> list[re.Pattern[str]
     return patterns
 
 
-def _terminate_process_group(process: subprocess.Popen[str], process_group_id: int) -> None:
+def _terminate_process_group(process: subprocess.Popen[bytes], process_group_id: int) -> None:
     if process_group_id == os.getpgrp():
         raise RuntimeError("refusing to signal the handler's own process group")
 
@@ -1113,16 +1180,18 @@ def _active_worker_is_alive(attempt: ActiveAttempt) -> bool:
     return process_state not in {"Z", "X"}
 
 
-def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
     for stream in (process.stdin, process.stdout, process.stderr):
         if stream is not None:
             with suppress(BrokenPipeError, OSError, ValueError):
                 stream.close()
 
 
-def _join_threads(threads: Sequence[threading.Thread]) -> None:
+def _join_threads(
+    threads: Sequence[threading.Thread], *, timeout: float = _THREAD_JOIN_SECONDS
+) -> None:
     for thread in threads:
-        thread.join(timeout=_THREAD_JOIN_SECONDS)
+        thread.join(timeout=timeout)
 
 
 @contextmanager

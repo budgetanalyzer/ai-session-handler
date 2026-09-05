@@ -9,11 +9,13 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from queue import Queue
 from typing import NoReturn
 from uuid import UUID
 
@@ -29,6 +31,9 @@ from ai_session_handler.runner import (
     EXIT_OK,
     CommandTemplateError,
     RunOptions,
+    _OutputQueueItem,
+    _read_stream,
+    _StreamItem,
     create_run_id,
     render_command_template,
     run_agent_process,
@@ -741,6 +746,106 @@ def test_run_handles_large_output_before_marker(tmp_path: Path) -> None:
 
     assert outcome.exit_code == EXIT_OK
     assert outcome.state.completed_phase_ids == ("phase-1",)
+
+
+def test_run_captures_very_long_line_and_split_unicode_marker(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import os, sys\n"
+        "os.write(sys.stdout.fileno(), b'x' * 100_000 + b'\\n')\n"
+        "for part in ['snowman: '.encode(), b'\\xe2', b'\\x98', b'\\x83\\n<phase-', "
+        "b'complete>split', b' marker</phase-complete>\\n']:\n"
+        "    os.write(sys.stdout.fileno(), part)\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_OK
+    assert outcome.state.last_run is not None
+    transcript = Path(outcome.state.last_run.transcript_path).read_text(encoding="utf-8")
+    assert "x" * 100_000 in transcript
+    assert "snowman: ☃" in transcript
+    assert "<phase-complete>split marker</phase-complete>" in transcript
+
+
+def test_sustained_output_does_not_starve_timeout(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import os, sys\n"
+        "chunk = b'noisy worker output\\n' * 800\n"
+        "while True:\n"
+        "    os.write(sys.stdout.fileno(), chunk)\n",
+    )
+    started = time.monotonic()
+
+    outcome = run_phases(_options(tmp_path, plan_path, script, timeout_seconds=0.1))
+
+    assert time.monotonic() - started < 2
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.TIMEOUT
+
+
+def test_reader_exits_when_bounded_queue_is_full_during_cleanup() -> None:
+    read_descriptor, write_descriptor = os.pipe()
+    stream = os.fdopen(read_descriptor, "rb")
+    output_queue: Queue[_OutputQueueItem] = Queue(maxsize=1)
+    output_queue.put(_StreamItem(stream_name="stderr", text="already full"))
+    cancel = threading.Event()
+    os.write(write_descriptor, b"blocked reader output")
+    reader = threading.Thread(
+        target=_read_stream,
+        args=("stdout", stream, output_queue, cancel),
+    )
+    reader.start()
+
+    time.sleep(0.05)
+    assert reader.is_alive()
+    cancel.set()
+    reader.join(timeout=1)
+    os.close(write_descriptor)
+    stream.close()
+
+    assert not reader.is_alive()
+
+
+def test_stop_regex_matches_output_from_final_drain(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import os, sys\nos.write(sys.stdout.fileno(), b'ordinary output\\nfinal stop text')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script, stop_on_regex=("final stop text$",)))
+
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.STOP_REGEX
+
+
+def test_normal_exit_transcript_contains_all_verbose_output(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import os, sys\n"
+        "for index in range(2000):\n"
+        "    os.write(sys.stdout.fileno(), f'record-{index:04d}\\n'.encode())\n"
+        "os.write(sys.stdout.fileno(), "
+        "b'<phase-complete>Transcript complete.</phase-complete>\\n')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_OK
+    assert outcome.state.last_run is not None
+    transcript = Path(outcome.state.last_run.transcript_path).read_text(encoding="utf-8")
+    for index in range(2000):
+        assert f"record-{index:04d}\n" in transcript
+    assert transcript.endswith("<phase-complete>Transcript complete.</phase-complete>\n")
 
 
 def test_run_records_missing_marker(tmp_path: Path) -> None:

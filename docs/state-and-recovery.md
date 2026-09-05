@@ -126,11 +126,13 @@ if members remain. Cleanup is based on the group identity retained at launch, so
 the original group leader exits before a resistant descendant. The runner never signals its own
 process group.
 
-Pipes, transcript handles, and stream threads are closed or joined after process cleanup. Attempt
-artifacts are opened and their transcript header is written before launch where possible, so an
-initial artifact IO failure does not start a worker. The bundled Codex wrapper does not create a
-nested session or process group: its `codex-lean` child remains reachable by the outer handler's
-group cleanup, and direct wrapper exceptions also terminate that immediate child.
+Pipes, transcript handles, and stream threads are closed or joined after process cleanup. Stream
+readers use bounded chunks and a bounded producer queue; cleanup cancellation also releases a
+reader waiting on a full queue after a consumer-side failure. Attempt artifacts are opened and
+their transcript header is written before launch where possible, so an initial artifact IO failure
+does not start a worker. The bundled Codex wrapper does not create a nested session or process
+group: its `codex-lean` child remains reachable by the outer handler's group cleanup, and direct
+wrapper exceptions also terminate that immediate child.
 
 This is lifecycle management, not an OS sandbox. It cannot guarantee cleanup if the handler is
 killed with SIGKILL, the container or kernel stops abruptly, or a descendant deliberately
