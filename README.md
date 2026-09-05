@@ -112,6 +112,15 @@ in the worker prompt is read-only context: workers must not modify it and must
 report their outcome through exactly one terminal marker. The runner owns all
 durable state transitions derived from that marker.
 
+Before launch, schema 2 state records a prepared active attempt; after launch it records a running
+attempt and a reuse-resistant Linux process identity when available. If the handler disappears
+before a terminal result is durable, an ordinary run refuses to repeat that phase. `status` remains
+read-only and reports the unresolved attempt and its artifacts. After inspecting partial changes
+and stopping any surviving worker, use `--retry-stopped`; the runner refuses the retry while the
+recorded worker can still be positively identified as alive. See
+[State and recovery](docs/state-and-recovery.md) for lifecycle details and the manual schema 1
+transition.
+
 The generated layout is:
 
 ```text
@@ -222,9 +231,9 @@ Print durable state and the latest transcript path:
 `status` prints the exact keyed state path as well as the plan workspace and
 selected execution workspace.
 
-If a phase stops, a later run refuses to continue by default and prints the
-stored stop message, latest transcript path, and recent transcript output when
-available. After human intervention, rerun that phase explicitly:
+If a phase stops or has an unresolved active attempt, a later run refuses to continue by default
+and prints the available recovery details. After inspecting the workspace and artifacts, answering
+any clarification, and stopping any surviving worker, rerun that phase explicitly:
 
 ```bash
 .venv/bin/ai-session-handler run \
@@ -347,7 +356,7 @@ already present in the environment.
 - `0`: configured phase limit reached or all phases complete
 - `2`: phase blocked
 - `3`: phase needs clarification
-- `4`: agent process failed, timeout, stop regex, missing marker, or multiple markers
+- `4`: agent process, launch, execution IO, timeout, stop regex, or marker failure
 - `5`: invalid plan, config, command template, or state
 
 Invalid user inputs are printed to stderr with the file, command, marker, or

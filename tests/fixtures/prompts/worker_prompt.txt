@@ -31,7 +31,7 @@ FAILURE MODES
 - Use <phase-complete> only after implementation and validation for this phase are complete.
 
 PREVIOUS STATE SUMMARY START
-schema_version: 1
+schema_version: 2
 plan:
   path: docs/plans/example.md
   sha256: abc123
@@ -41,6 +41,7 @@ current_phase:
   id: phase-2
   title: Prompt Builder
 stop: none
+active_attempt: none
 last_run:
   run_id: 20260705T115000Z-phase-1
   phase_id: phase-1
@@ -48,6 +49,8 @@ last_run:
   started_at: 2026-07-05T11:50:00Z
   finished_at: 2026-07-05T11:55:00Z
   exit_code: 0
+  execution_workspace: /service
+  prompt_path: /plan-repo/.ai-session-handler/plans/plan-key/prompts/20260705T115000Z-phase-1.txt
   transcript_path: .ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt
   summary: Completed parser.
 PREVIOUS STATE SUMMARY END

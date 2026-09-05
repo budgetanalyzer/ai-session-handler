@@ -9,7 +9,7 @@ import pytest
 from ai_session_handler.artifacts import ArtifactExistsError
 from ai_session_handler.phases import Phase
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
-from ai_session_handler.state import LastRun, PhaseRef, PlanRecord, RunnerState
+from ai_session_handler.state import AttemptStatus, LastRun, PhaseRef, PlanRecord, RunnerState
 
 
 def test_render_worker_prompt_matches_fixture() -> None:
@@ -89,10 +89,14 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
         last_run=LastRun(
             run_id="20260705T115000Z-phase-1",
             phase_id="phase-1",
-            status="phase-complete",
+            status=AttemptStatus.PHASE_COMPLETE,
             started_at="2026-07-05T11:50:00Z",
             finished_at="2026-07-05T11:55:00Z",
             exit_code=0,
+            execution_workspace="/service",
+            prompt_path=(
+                "/plan-repo/.ai-session-handler/plans/plan-key/prompts/20260705T115000Z-phase-1.txt"
+            ),
             transcript_path=(
                 ".ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt"
             ),

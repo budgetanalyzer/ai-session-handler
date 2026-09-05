@@ -14,11 +14,12 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 from uuid import UUID
 
 import pytest
 
-from ai_session_handler.artifacts import ArtifactExistsError
+from ai_session_handler.config import default_state_path
 from ai_session_handler.phases import PlanParseError, read_plan_snapshot
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
@@ -32,7 +33,16 @@ from ai_session_handler.runner import (
     run_agent_process,
     run_phases,
 )
-from ai_session_handler.state import PlanHashMismatchError, StopReason, read_state
+from ai_session_handler.state import (
+    ActiveAttemptError,
+    ActiveAttemptStatus,
+    AttemptStatus,
+    PlanHashMismatchError,
+    RunnerState,
+    StopReason,
+    read_state,
+    write_state,
+)
 from ai_session_handler.transcripts import transcript_path
 
 
@@ -97,11 +107,76 @@ def test_existing_transcript_for_forced_duplicate_id_prevents_launch(
     existing_transcript.write_text("original transcript\n", encoding="utf-8")
     monkeypatch.setattr("ai_session_handler.runner.create_run_id", lambda phase: forced_id)
 
-    with pytest.raises(ArtifactExistsError, match="refusing to overwrite"):
-        run_phases(options)
+    outcome = run_phases(options)
 
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.EXECUTION_IO_FAILED
     assert not sentinel_path.exists()
     assert existing_transcript.read_text(encoding="utf-8") == "original transcript\n"
+
+
+def test_prepared_attempt_is_durable_before_worker_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(tmp_path, "agent.py", "print('unused')\n")
+    options = _options(tmp_path, plan_path, script)
+
+    def refuse_launch(*args: object, **kwargs: object) -> NoReturn:
+        del args, kwargs
+        prepared = read_state(options.state_path)
+        assert prepared.active_attempt is not None
+        assert prepared.active_attempt.status is ActiveAttemptStatus.PREPARED
+        assert prepared.active_attempt.process is None
+        raise FileNotFoundError("missing executable")
+
+    monkeypatch.setattr("ai_session_handler.runner.subprocess.Popen", refuse_launch)
+
+    outcome = run_phases(options)
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.active_attempt is None
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.LAUNCH_FAILED
+    assert outcome.state.last_run is not None
+    assert outcome.state.last_run.status is AttemptStatus.LAUNCH_FAILED
+
+
+def test_outcome_write_failure_preserves_durable_running_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "print('<phase-complete>Finished before state failure.</phase-complete>')\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    writes = 0
+
+    def fail_third_write(path: Path, state: RunnerState) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 3:
+            raise OSError("state replacement failed")
+        write_state(path, state)
+
+    monkeypatch.setattr("ai_session_handler.runner.write_state", fail_third_write)
+
+    outcome = run_phases(options)
+
+    durable = read_state(options.state_path)
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert "could not record attempt outcome" in outcome.message
+    assert durable.active_attempt is not None
+    assert durable.active_attempt.status is ActiveAttemptStatus.RUNNING
+    assert durable.stop is None
+    assert durable.completed_phase_ids == ()
+    with pytest.raises(ActiveAttemptError):
+        run_phases(options)
 
 
 def test_run_records_stderr_blocked_marker(tmp_path: Path) -> None:
@@ -416,7 +491,11 @@ def test_process_signal_handlers_are_restored_after_success(tmp_path: Path) -> N
     assert signal.getsignal(signal.SIGTERM) is previous_sigterm
 
 
-def test_sigterm_cleans_up_worker_group(tmp_path: Path) -> None:
+@pytest.mark.parametrize("interrupt_signal", [signal.SIGINT, signal.SIGTERM])
+def test_catchable_signal_records_interruption_and_cleans_up_worker_group(
+    tmp_path: Path,
+    interrupt_signal: signal.Signals,
+) -> None:
     plan_path = _write_plan(tmp_path)
     child_pid_path = tmp_path / "child.pid"
     grandchild_pid_path = tmp_path / "grandchild.pid"
@@ -449,11 +528,20 @@ def test_sigterm_cleans_up_worker_group(tmp_path: Path) -> None:
 
     try:
         _wait_for_paths(handler, child_pid_path, grandchild_pid_path)
-        handler.send_signal(signal.SIGTERM)
+        handler.send_signal(interrupt_signal)
 
-        assert handler.wait(timeout=4) == 128 + signal.SIGTERM
+        expected_return_code = (
+            -signal.SIGINT if interrupt_signal is signal.SIGINT else 128 + signal.SIGTERM
+        )
+        assert handler.wait(timeout=4) == expected_return_code
         assert not _process_is_running(_read_pid(child_pid_path))
         assert not _process_is_running(_read_pid(grandchild_pid_path))
+        state = read_state(default_state_path(tmp_path, plan_path))
+        assert state.active_attempt is None
+        assert state.stop is not None
+        assert state.stop.reason is StopReason.INTERRUPTED
+        assert state.last_run is not None
+        assert state.last_run.status is AttemptStatus.INTERRUPTED
     finally:
         if handler.poll() is None:
             handler.kill()

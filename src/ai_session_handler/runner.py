@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -35,8 +35,15 @@ from ai_session_handler.markers import (
 from ai_session_handler.phases import Phase, read_plan_snapshot, resolve_phase_workspace
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
 from ai_session_handler.state import (
+    ActiveAttempt,
+    ActiveAttemptStatus,
+    ActiveWorkerError,
+    AttemptStatus,
     LastRun,
+    PhaseRef,
+    ProcessIdentity,
     RunnerState,
+    SnapshotIdentity,
     StopReason,
     StopState,
     ensure_plan_hash_matches,
@@ -137,6 +144,10 @@ class ExecutionOwnershipError(RuntimeError):
     """Raised when another handler invocation owns a required directory."""
 
 
+class AgentLaunchError(OSError):
+    """Raised when a prepared attempt cannot launch its worker command."""
+
+
 def run_phases(options: RunOptions) -> RunnerOutcome:
     """Run selected plan phases and persist state transitions."""
     if options.max_phases is not None and options.max_phases < 1:
@@ -152,6 +163,8 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     with _own_directory(options.plan_workspace_path, scope="plan workspace") as plan_ownership:
         phases = snapshot.phases
         state = read_state(options.state_path)
+        if state.active_attempt is not None and not options.retry_stopped:
+            select_next_phase(state, phases)
         state = ensure_plan_hash_matches(
             state,
             snapshot,
@@ -164,6 +177,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             if phases_run > 0:
                 ensure_plan_snapshot_unchanged(snapshot)
             phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
+            abandoned_attempt = state.active_attempt if retry_stopped else None
             retry_stopped = False
             if phase is None:
                 if phases_run == 0:
@@ -177,12 +191,47 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                 plan_workspace_path=options.plan_workspace_path,
                 source=str(snapshot.path),
             )
+            if (
+                abandoned_attempt is not None
+                and Path(abandoned_attempt.execution_workspace).resolve()
+                != execution_workspace_path
+            ):
+                raise ValueError(
+                    "active attempt execution workspace differs from the selected phase; "
+                    "restore the original workspace declaration before retrying"
+                )
             with _own_execution_workspace(plan_ownership, execution_workspace_path):
-                state = with_current_phase(replace(state, stop=None), phase)
-                write_state(options.state_path, state)
-
+                if abandoned_attempt is not None and _active_worker_is_alive(abandoned_attempt):
+                    raise ActiveWorkerError(abandoned_attempt)
                 run_id = create_run_id(phase)
                 current_transcript_path = transcript_path(options.state_path.parent, run_id)
+                current_prompt_path = options.state_path.parent / "prompts" / f"{run_id}.txt"
+                if abandoned_attempt is not None:
+                    state = _resolve_abandoned_attempt(state, abandoned_attempt)
+                active_attempt = ActiveAttempt(
+                    id=run_id,
+                    status=ActiveAttemptStatus.PREPARED,
+                    phase=PhaseRef(id=phase.id, title=phase.title),
+                    snapshot=SnapshotIdentity(path=str(snapshot.path), sha256=snapshot.sha256),
+                    execution_workspace=str(execution_workspace_path),
+                    started_at=format_utc_timestamp(),
+                    prompt_path=str(current_prompt_path),
+                    transcript_path=str(current_transcript_path),
+                )
+                state = replace(
+                    state,
+                    current_phase=active_attempt.phase,
+                    active_attempt=active_attempt,
+                    stop=None,
+                )
+                try:
+                    write_state(options.state_path, state)
+                except OSError as error:
+                    return RunnerOutcome(
+                        EXIT_AGENT_FAILED,
+                        f"execution-io-failed: could not prepare attempt state: {error}",
+                        state,
+                    )
                 prompt_context = PromptContext(
                     plan_workspace_path=options.plan_workspace_path,
                     execution_workspace_path=execution_workspace_path,
@@ -193,27 +242,75 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                     run_id=run_id,
                     transcript_path=current_transcript_path,
                 )
-                prompt_path = write_worker_prompt(options.state_path.parent, prompt_context)
-                prompt_text = render_worker_prompt(prompt_context)
+                try:
+                    prompt_path = write_worker_prompt(options.state_path.parent, prompt_context)
+                    prompt_text = render_worker_prompt(prompt_context)
 
-                process_result = run_agent_process(
-                    agent_cmd=options.agent_cmd,
-                    prompt_text=prompt_text,
-                    prompt_path=prompt_path,
-                    plan_workspace_path=options.plan_workspace_path,
-                    execution_workspace_path=execution_workspace_path,
-                    run_id=run_id,
-                    transcript_file=current_transcript_path,
-                    state_file=options.state_path,
-                    phase=phase,
-                    plan_path=snapshot.path,
-                    timeout_seconds=options.timeout_seconds,
-                    stop_patterns=stop_patterns,
-                    quiet=options.quiet,
-                )
+                    def record_process(
+                        process_identity: ProcessIdentity | None,
+                        prepared_attempt: ActiveAttempt = active_attempt,
+                    ) -> None:
+                        nonlocal state
+                        running_attempt = replace(
+                            prepared_attempt,
+                            status=ActiveAttemptStatus.RUNNING,
+                            process=process_identity,
+                        )
+                        running_state = replace(state, active_attempt=running_attempt)
+                        write_state(options.state_path, running_state)
+                        state = running_state
 
-                state, outcome = apply_process_result(state, phase, run_id, process_result)
-                write_state(options.state_path, state)
+                    process_result = run_agent_process(
+                        agent_cmd=options.agent_cmd,
+                        prompt_text=prompt_text,
+                        prompt_path=prompt_path,
+                        plan_workspace_path=options.plan_workspace_path,
+                        execution_workspace_path=execution_workspace_path,
+                        run_id=run_id,
+                        transcript_file=current_transcript_path,
+                        state_file=options.state_path,
+                        phase=phase,
+                        plan_path=snapshot.path,
+                        timeout_seconds=options.timeout_seconds,
+                        stop_patterns=stop_patterns,
+                        quiet=options.quiet,
+                        started_at=active_attempt.started_at,
+                        process_started=record_process,
+                    )
+                except AgentLaunchError as error:
+                    return _record_attempt_failure(
+                        options.state_path,
+                        state,
+                        StopReason.LAUNCH_FAILED,
+                        f"could not launch agent command: {error}",
+                    )
+                except (KeyboardInterrupt, SystemExit):
+                    interrupted = _attempt_failure_state(
+                        state,
+                        StopReason.INTERRUPTED,
+                        "handler interrupted while the worker was active",
+                    )
+                    with suppress(OSError):
+                        write_state(options.state_path, interrupted)
+                    raise
+                except OSError as error:
+                    return _record_attempt_failure(
+                        options.state_path,
+                        state,
+                        StopReason.EXECUTION_IO_FAILED,
+                        f"attempt execution IO failed: {error}",
+                    )
+
+                updated_state, outcome = apply_process_result(state, phase, process_result)
+                try:
+                    write_state(options.state_path, updated_state)
+                except OSError as error:
+                    return RunnerOutcome(
+                        EXIT_AGENT_FAILED,
+                        f"execution-io-failed: could not record attempt outcome: {error}",
+                        state,
+                    )
+                state = updated_state
 
             if outcome.exit_code != EXIT_OK:
                 return outcome
@@ -286,9 +383,11 @@ def run_agent_process(
     quiet: bool = False,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    started_at: str | None = None,
+    process_started: Callable[[ProcessIdentity | None], None] | None = None,
 ) -> ProcessResult:
     """Execute the agent command, capturing output and optionally streaming it live."""
-    started_at = format_utc_timestamp()
+    process_started_at = format_utc_timestamp() if started_at is None else started_at
     command = render_command_template(
         agent_cmd,
         prompt_file=prompt_path,
@@ -315,7 +414,7 @@ def run_agent_process(
         state_path=state_file,
         plan_workspace_path=plan_workspace_path,
         execution_workspace_path=execution_workspace_path,
-        started_at=started_at,
+        started_at=process_started_at,
         agent_cmd=agent_cmd,
         rendered_command=command,
     )
@@ -331,19 +430,24 @@ def run_agent_process(
         transcript.write(render_transcript_header(header))
         transcript.flush()
         try:
-            process = subprocess.Popen(
-                command,
-                cwd=execution_workspace_path,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=execution_workspace_path,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    start_new_session=True,
+                )
+            except OSError as error:
+                raise AgentLaunchError(str(error)) from error
             process_group_id = process.pid
+            if process_started is not None:
+                process_started(_read_process_identity(process.pid))
             assert process.stdin is not None
             assert process.stdout is not None
             assert process.stderr is not None
@@ -438,7 +542,7 @@ def run_agent_process(
     return ProcessResult(
         exit_code=return_code,
         combined_output="".join(combined_parts),
-        started_at=started_at,
+        started_at=process_started_at,
         finished_at=finished_at,
         transcript_path=transcript_file,
         stop_reason=stop_reason,
@@ -547,22 +651,24 @@ def _replacement_fields(argument: str) -> list[str]:
 def apply_process_result(
     state: RunnerState,
     phase: Phase,
-    run_id: str,
     result: ProcessResult,
 ) -> tuple[RunnerState, RunnerOutcome]:
     """Apply process and marker results to durable state."""
+    attempt = state.active_attempt
+    if attempt is None or attempt.phase.id != phase.id:
+        raise ValueError("process result does not match the active attempt")
     if result.stop_reason is not None:
-        return _stopped_runner_failure(state, phase, run_id, result, result.stop_reason)
+        return _stopped_runner_failure(state, phase, result, result.stop_reason)
 
     if result.exit_code != 0:
-        return _stopped_runner_failure(state, phase, run_id, result, StopReason.AGENT_FAILED)
+        return _stopped_runner_failure(state, phase, result, StopReason.AGENT_FAILED)
 
     try:
         marker = parse_terminal_marker(result.combined_output)
     except MissingMarkerError:
-        return _stopped_runner_failure(state, phase, run_id, result, StopReason.MISSING_MARKER)
+        return _stopped_runner_failure(state, phase, result, StopReason.MISSING_MARKER)
     except MultipleMarkersError:
-        return _stopped_runner_failure(state, phase, run_id, result, StopReason.MULTIPLE_MARKERS)
+        return _stopped_runner_failure(state, phase, result, StopReason.MULTIPLE_MARKERS)
 
     if marker.kind is MarkerKind.COMPLETE:
         completed = state.completed_phase_ids
@@ -572,11 +678,11 @@ def apply_process_result(
             state,
             completed_phase_ids=completed,
             current_phase=None,
+            active_attempt=None,
             stop=None,
             last_run=_last_run(
-                run_id,
-                phase.id,
-                "phase-complete",
+                attempt,
+                AttemptStatus.PHASE_COMPLETE,
                 result,
                 marker.text,
                 EXIT_OK,
@@ -587,22 +693,23 @@ def apply_process_result(
     if marker.kind is MarkerKind.BLOCKED:
         updated = replace(
             state,
+            active_attempt=None,
             stop=StopState(reason=StopReason.BLOCKED, phase_id=phase.id, message=marker.text),
-            last_run=_last_run(run_id, phase.id, "blocked", result, marker.text, EXIT_BLOCKED),
+            last_run=_last_run(attempt, AttemptStatus.BLOCKED, result, marker.text, EXIT_BLOCKED),
         )
         return updated, RunnerOutcome(EXIT_BLOCKED, f"phase-blocked: {marker.text}", updated)
 
     updated = replace(
         state,
+        active_attempt=None,
         stop=StopState(
             reason=StopReason.NEEDS_CLARIFICATION,
             phase_id=phase.id,
             clarification_request=marker.text,
         ),
         last_run=_last_run(
-            run_id,
-            phase.id,
-            "needs-clarification",
+            attempt,
+            AttemptStatus.NEEDS_CLARIFICATION,
             result,
             marker.text,
             EXIT_NEEDS_CLARIFICATION,
@@ -619,36 +726,116 @@ def apply_process_result(
 def _stopped_runner_failure(
     state: RunnerState,
     phase: Phase,
-    run_id: str,
     result: ProcessResult,
     reason: StopReason,
 ) -> tuple[RunnerState, RunnerOutcome]:
+    attempt = state.active_attempt
+    if attempt is None:
+        raise ValueError("runner failure does not have an active attempt")
     message = result.stop_message or _failure_message(reason, result.exit_code)
     updated = replace(
         state,
+        active_attempt=None,
         stop=StopState(reason=reason, phase_id=phase.id, message=message),
-        last_run=_last_run(run_id, phase.id, reason.value, result, message, EXIT_AGENT_FAILED),
+        last_run=_last_run(
+            attempt,
+            AttemptStatus(reason.value),
+            result,
+            message,
+            EXIT_AGENT_FAILED,
+        ),
     )
     return updated, RunnerOutcome(EXIT_AGENT_FAILED, f"{reason.value}: {message}", updated)
 
 
 def _last_run(
-    run_id: str,
-    phase_id: str,
-    status: str,
+    attempt: ActiveAttempt,
+    status: AttemptStatus,
     result: ProcessResult,
     summary: str,
     exit_code: int,
 ) -> LastRun:
     return LastRun(
-        run_id=run_id,
-        phase_id=phase_id,
+        run_id=attempt.id,
+        phase_id=attempt.phase.id,
         status=status,
         started_at=result.started_at,
         finished_at=result.finished_at,
         exit_code=exit_code,
+        execution_workspace=attempt.execution_workspace,
+        prompt_path=attempt.prompt_path,
         transcript_path=str(result.transcript_path),
         summary=summary,
+    )
+
+
+def _attempt_failure_state(
+    state: RunnerState,
+    reason: StopReason,
+    message: str,
+) -> RunnerState:
+    attempt = state.active_attempt
+    if attempt is None:
+        return state
+    last_run = LastRun(
+        run_id=attempt.id,
+        phase_id=attempt.phase.id,
+        status=AttemptStatus(reason.value),
+        started_at=attempt.started_at,
+        finished_at=format_utc_timestamp(),
+        exit_code=EXIT_AGENT_FAILED,
+        execution_workspace=attempt.execution_workspace,
+        prompt_path=attempt.prompt_path,
+        transcript_path=attempt.transcript_path,
+        summary=message,
+    )
+    return replace(
+        state,
+        active_attempt=None,
+        stop=StopState(reason=reason, phase_id=attempt.phase.id, message=message),
+        last_run=last_run,
+    )
+
+
+def _record_attempt_failure(
+    state_path: Path,
+    state: RunnerState,
+    reason: StopReason,
+    message: str,
+) -> RunnerOutcome:
+    updated = _attempt_failure_state(state, reason, message)
+    try:
+        write_state(state_path, updated)
+    except OSError as write_error:
+        return RunnerOutcome(
+            EXIT_AGENT_FAILED,
+            f"{reason.value}: {message}; could not record failure: {write_error}",
+            state,
+        )
+    return RunnerOutcome(EXIT_AGENT_FAILED, f"{reason.value}: {message}", updated)
+
+
+def _resolve_abandoned_attempt(
+    state: RunnerState,
+    attempt: ActiveAttempt,
+) -> RunnerState:
+    message = "previous handler ended without recording a terminal outcome; result is unknown"
+    return replace(
+        state,
+        active_attempt=None,
+        stop=None,
+        last_run=LastRun(
+            run_id=attempt.id,
+            phase_id=attempt.phase.id,
+            status=AttemptStatus.INTERRUPTED,
+            started_at=attempt.started_at,
+            finished_at=format_utc_timestamp(),
+            exit_code=EXIT_AGENT_FAILED,
+            execution_workspace=attempt.execution_workspace,
+            prompt_path=attempt.prompt_path,
+            transcript_path=attempt.transcript_path,
+            summary=message,
+        ),
     )
 
 
@@ -777,6 +964,39 @@ def _process_group_exists(process_group_id: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _read_process_identity(process_id: int) -> ProcessIdentity | None:
+    """Read a Linux identity that does not confuse a reused numeric PID."""
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+        stat_fields = stat.rsplit(")", 1)[1].split()
+        start_time_ticks = int(stat_fields[19])
+        process_group_id = os.getpgid(process_id)
+    except (FileNotFoundError, IndexError, OSError, ValueError):
+        return None
+    return ProcessIdentity(
+        pid=process_id,
+        process_group_id=process_group_id,
+        boot_id=boot_id,
+        start_time_ticks=start_time_ticks,
+    )
+
+
+def _active_worker_is_alive(attempt: ActiveAttempt) -> bool:
+    identity = attempt.process
+    if identity is None:
+        return False
+    current = _read_process_identity(identity.pid)
+    if current != identity:
+        return False
+    try:
+        stat = Path(f"/proc/{identity.pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    process_state = stat.rsplit(")", 1)[1].split()[0]
+    return process_state not in {"Z", "X"}
 
 
 def _close_process_pipes(process: subprocess.Popen[str]) -> None:

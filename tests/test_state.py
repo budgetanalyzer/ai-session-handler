@@ -12,12 +12,19 @@ from ai_session_handler.config import ConfigError, default_state_path, plan_key
 from ai_session_handler.phases import Phase, parse_phases, read_plan_snapshot
 from ai_session_handler.state import (
     AcceptedPlanChangeError,
+    ActiveAttempt,
+    ActiveAttemptError,
+    ActiveAttemptStatus,
+    AttemptStatus,
     LastRun,
     PhaseRef,
     PlanHashMismatchError,
     PlanPathMismatchError,
     PlanRecord,
+    ProcessIdentity,
     RunnerState,
+    SnapshotIdentity,
+    StateError,
     StoppedStateError,
     StopReason,
     StopState,
@@ -43,10 +50,13 @@ def test_missing_state_reads_as_new_state(tmp_path: Path) -> None:
 
 def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
     state_path = tmp_path / ".ai-session-handler" / "plan.json"
+    run_id = "20260705T120102Z-phase-2"
+    prompt_path = state_path.parent / "prompts" / f"{run_id}.txt"
+    transcript_path = state_path.parent / "transcripts" / f"{run_id}.txt"
     state = RunnerState(
         plan=PlanRecord(
-            path="docs/plans/example.md",
-            sha256="abc123",
+            path=str(tmp_path / "docs/plans/example.md"),
+            sha256="a" * 64,
             accepted_at="2026-07-05T12:01:02Z",
         ),
         completed_phase_ids=("phase-1",),
@@ -57,13 +67,15 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
             clarification_request="Which state file path should be used?",
         ),
         last_run=LastRun(
-            run_id="20260705T120102Z-phase-2",
+            run_id=run_id,
             phase_id="phase-2",
-            status="needs-clarification",
+            status=AttemptStatus.NEEDS_CLARIFICATION,
             started_at="2026-07-05T12:01:02Z",
             finished_at="2026-07-05T12:02:03Z",
             exit_code=3,
-            transcript_path=".ai-session-handler/plans/plan-key/transcripts/run.txt",
+            execution_workspace=str(tmp_path),
+            prompt_path=str(prompt_path),
+            transcript_path=str(transcript_path),
             summary="Asked for clarification.",
         ),
     )
@@ -72,6 +84,92 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
 
     assert read_state(state_path) == state
     assert state_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_active_attempt_round_trips_with_process_identity(tmp_path: Path) -> None:
+    state_path = tmp_path / ".ai-session-handler" / "plan.json"
+    plan_path = tmp_path / "plan.md"
+    run_id = "20260705T120102Z-phase-2-attempt"
+    phase = PhaseRef(id="phase-2", title="State Store")
+    attempt = ActiveAttempt(
+        id=run_id,
+        status=ActiveAttemptStatus.RUNNING,
+        phase=phase,
+        snapshot=SnapshotIdentity(path=str(plan_path), sha256="a" * 64),
+        execution_workspace=str(tmp_path),
+        started_at="2026-07-05T12:01:02Z",
+        prompt_path=str(state_path.parent / "prompts" / f"{run_id}.txt"),
+        transcript_path=str(state_path.parent / "transcripts" / f"{run_id}.txt"),
+        process=ProcessIdentity(
+            pid=123,
+            process_group_id=123,
+            boot_id="boot-id",
+            start_time_ticks=456,
+        ),
+    )
+    state = RunnerState(
+        plan=PlanRecord(
+            path=str(plan_path),
+            sha256="a" * 64,
+            accepted_at="2026-07-05T12:00:00Z",
+        ),
+        current_phase=phase,
+        active_attempt=attempt,
+    )
+
+    write_state(state_path, state)
+
+    assert read_state(state_path) == state
+
+
+def test_active_attempt_snapshot_must_match_accepted_plan(tmp_path: Path) -> None:
+    state_path = tmp_path / ".ai-session-handler" / "state.json"
+    phase = PhaseRef(id="phase-1", title="One")
+    run_id = "attempt-1"
+    state = RunnerState(
+        plan=PlanRecord(
+            path=str(tmp_path / "plan.md"),
+            sha256="a" * 64,
+            accepted_at="2026-07-05T12:00:00Z",
+        ),
+        current_phase=phase,
+        active_attempt=ActiveAttempt(
+            id=run_id,
+            status=ActiveAttemptStatus.PREPARED,
+            phase=phase,
+            snapshot=SnapshotIdentity(path=str(tmp_path / "plan.md"), sha256="b" * 64),
+            execution_workspace=str(tmp_path),
+            started_at="2026-07-05T12:01:02Z",
+            prompt_path=str(state_path.parent / "prompts" / f"{run_id}.txt"),
+            transcript_path=str(state_path.parent / "transcripts" / f"{run_id}.txt"),
+        ),
+    )
+
+    with pytest.raises(
+        StateError,
+        match=r"active_attempt\.snapshot\.sha256 must match plan\.sha256",
+    ):
+        write_state(state_path, state)
+
+
+def test_schema_one_state_reports_manual_transition_document(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"schema_version": 1}\n', encoding="utf-8")
+
+    with pytest.raises(StateError, match=r"manual transition.*docs/state-and-recovery\.md"):
+        read_state(state_path)
+
+
+def test_schema_two_state_requires_explicit_active_attempt_key(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"schema_version": 2, "plan": null, "completed_phase_ids": [], '
+        '"current_phase": null, "stop": null, "last_run": null}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StateError, match="missing required key active_attempt"):
+        read_state(state_path)
 
 
 def test_compute_plan_hash_reads_plan_bytes(tmp_path: Path) -> None:
@@ -187,6 +285,30 @@ def test_retry_stopped_is_required_for_stopped_state() -> None:
     )
 
     with pytest.raises(StoppedStateError):
+        select_next_phase(state, phases)
+
+    assert select_next_phase(state, phases, retry_stopped=True) == phases[1]
+
+
+def test_retry_stopped_is_required_for_active_attempt(tmp_path: Path) -> None:
+    phases = _phases()
+    phase = PhaseRef(id="phase-2", title="Two")
+    run_id = "attempt-2"
+    state = RunnerState(
+        current_phase=phase,
+        active_attempt=ActiveAttempt(
+            id=run_id,
+            status=ActiveAttemptStatus.PREPARED,
+            phase=phase,
+            snapshot=SnapshotIdentity(path=str(tmp_path / "plan.md"), sha256="a" * 64),
+            execution_workspace=str(tmp_path),
+            started_at="2026-07-05T12:01:02Z",
+            prompt_path=str(tmp_path / "prompts" / f"{run_id}.txt"),
+            transcript_path=str(tmp_path / "transcripts" / f"{run_id}.txt"),
+        ),
+    )
+
+    with pytest.raises(ActiveAttemptError):
         select_next_phase(state, phases)
 
     assert select_next_phase(state, phases, retry_stopped=True) == phases[1]

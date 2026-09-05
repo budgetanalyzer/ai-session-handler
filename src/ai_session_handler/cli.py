@@ -34,6 +34,8 @@ from ai_session_handler.runner import (
     run_phases,
 )
 from ai_session_handler.state import (
+    ActiveAttempt,
+    ActiveAttemptError,
     PlanHashMismatchError,
     StateError,
     StoppedStateError,
@@ -157,6 +159,9 @@ def _run_command(args: argparse.Namespace) -> int:
     except StoppedStateError as error:
         _print_stopped_state_error(error, state_path, plan_path, plan_workspace_path)
         return EXIT_INVALID
+    except ActiveAttemptError as error:
+        _print_active_attempt_error(error.attempt)
+        return EXIT_INVALID
     except PlanHashMismatchError as error:
         _print_plan_hash_mismatch(error)
         return EXIT_INVALID
@@ -186,60 +191,91 @@ def _status_command(args: argparse.Namespace) -> int:
 
     try:
         ensure_no_legacy_state(plan_workspace_path, plan_path)
-        snapshot = read_plan_snapshot(plan_path)
-        phases = snapshot.phases
         state = read_state(state_path)
-        ensure_plan_hash_matches(state, snapshot)
-    except PlanHashMismatchError as error:
-        _print_plan_hash_mismatch(error)
-        return EXIT_INVALID
-    except (ConfigError, OSError, PlanParseError, StateError) as error:
+    except (ConfigError, OSError, StateError) as error:
         _print_error(str(error))
         return EXIT_INVALID
 
-    selected_phase: Phase | None
-    if state.stop is not None:
-        selected_phase = _phase_by_id(phases, state.stop.phase_id)
-    else:
-        selected_phase = select_next_phase(state, phases)
-
+    plan_error: OSError | PlanParseError | StateError | None = None
+    snapshot = None
     try:
-        execution_workspace_path = (
-            None
-            if selected_phase is None
-            else resolve_phase_workspace(
-                selected_phase,
-                plan_workspace_path=plan_workspace_path,
-                source=str(plan_path),
-            )
-        )
-    except PlanParseError as error:
-        _print_error(str(error))
+        snapshot = read_plan_snapshot(plan_path)
+        ensure_plan_hash_matches(state, snapshot)
+    except (OSError, PlanParseError, StateError) as error:
+        plan_error = error
+
+    selected_phase: Phase | None = None
+    execution_workspace_path: Path | None = None
+    try:
+        if state.active_attempt is not None:
+            execution_workspace_path = Path(state.active_attempt.execution_workspace)
+        elif state.stop is not None:
+            if state.last_run is not None and state.last_run.phase_id == state.stop.phase_id:
+                execution_workspace_path = Path(state.last_run.execution_workspace)
+            if snapshot is not None and plan_error is None:
+                selected_phase = _phase_by_id(snapshot.phases, state.stop.phase_id)
+                execution_workspace_path = resolve_phase_workspace(
+                    selected_phase,
+                    plan_workspace_path=plan_workspace_path,
+                    source=str(plan_path),
+                )
+        elif snapshot is not None and plan_error is None:
+            selected_phase = select_next_phase(state, snapshot.phases)
+            if selected_phase is not None:
+                execution_workspace_path = resolve_phase_workspace(
+                    selected_phase,
+                    plan_workspace_path=plan_workspace_path,
+                    source=str(plan_path),
+                )
+    except (PlanParseError, StateError) as error:
+        plan_error = error
+
+    if plan_error is not None and state.active_attempt is None and state.stop is None:
+        _print_status_plan_error(plan_error)
         return EXIT_INVALID
 
-    if state.stop is not None:
+    if state.active_attempt is not None:
+        attempt = state.active_attempt
+        print(
+            f"active/abandoned: {attempt.phase.id} ({attempt.status.value}, attempt {attempt.id})"
+        )
+        print(f"attempt started: {attempt.started_at}")
+        print(f"attempt prompt: {attempt.prompt_path}")
+        print(f"attempt transcript: {attempt.transcript_path}")
+        if attempt.process is None:
+            print("worker process identity: unknown")
+        else:
+            print(f"worker process id: {attempt.process.pid}")
+    elif state.stop is not None:
         print(f"stopped: {state.stop.phase_id} ({state.stop.reason.value})")
         if state.stop.clarification_request is not None:
             print(f"clarification: {state.stop.clarification_request}")
         if state.stop.message is not None:
             print(f"message: {state.stop.message}")
     else:
-        if selected_phase is None:
+        if plan_error is not None:
+            print("next phase: unavailable")
+        elif selected_phase is None:
             print("all complete")
         else:
             print(f"next phase: {selected_phase.id} {selected_phase.title}")
 
     print(f"plan workspace path: {plan_workspace_path}")
     print(f"state path: {state_path}")
-    if selected_phase is None:
+    if execution_workspace_path is None:
         print("execution workspace path: none")
     else:
         print(f"execution workspace path: {execution_workspace_path}")
 
-    if state.last_run is not None:
+    if state.active_attempt is not None:
+        print(f"latest transcript: {state.active_attempt.transcript_path}")
+    elif state.last_run is not None:
         print(f"latest transcript: {state.last_run.transcript_path}")
     else:
         print("latest transcript: none")
+    if plan_error is not None:
+        _print_status_plan_error(plan_error)
+        return EXIT_INVALID
     return 0
 
 
@@ -298,6 +334,21 @@ def _print_stopped_state_error(
     _print_transcript_tail(Path(state.last_run.transcript_path), sys.stderr)
 
 
+def _print_active_attempt_error(attempt: ActiveAttempt) -> None:
+    _print_error(
+        f"phase {attempt.phase.id} has an abandoned {attempt.status.value} attempt "
+        f"{attempt.id}; inspect partial changes and stop any surviving worker before retrying"
+    )
+    print(f"execution workspace path: {attempt.execution_workspace}", file=sys.stderr)
+    print(f"prompt: {attempt.prompt_path}", file=sys.stderr)
+    print(f"transcript: {attempt.transcript_path}", file=sys.stderr)
+    if attempt.process is None:
+        print("worker process identity: unknown", file=sys.stderr)
+    else:
+        print(f"recorded worker pid: {attempt.process.pid}", file=sys.stderr)
+    print("retry requires: --retry-stopped", file=sys.stderr)
+
+
 def _print_run_outcome(outcome: RunnerOutcome) -> None:
     if outcome.exit_code != EXIT_AGENT_FAILED:
         print(outcome.message)
@@ -307,12 +358,22 @@ def _print_run_outcome(outcome: RunnerOutcome) -> None:
     if outcome.state.last_run is not None:
         print(f"transcript: {outcome.state.last_run.transcript_path}", file=sys.stderr)
         _print_transcript_tail(Path(outcome.state.last_run.transcript_path), sys.stderr)
+    elif outcome.state.active_attempt is not None:
+        print(f"transcript: {outcome.state.active_attempt.transcript_path}", file=sys.stderr)
+        _print_transcript_tail(Path(outcome.state.active_attempt.transcript_path), sys.stderr)
 
 
 def _print_plan_hash_mismatch(error: PlanHashMismatchError) -> None:
     print(f"plan hash mismatch: {error.plan_path}", file=sys.stderr)
     print(f"expected: {error.expected_sha256}", file=sys.stderr)
     print(f"actual:   {error.actual_sha256}", file=sys.stderr)
+
+
+def _print_status_plan_error(error: OSError | PlanParseError | StateError) -> None:
+    if isinstance(error, PlanHashMismatchError):
+        _print_plan_hash_mismatch(error)
+    else:
+        _print_error(str(error))
 
 
 def _print_transcript_tail(path: Path, stream: TextIO) -> None:

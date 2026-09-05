@@ -24,6 +24,51 @@ Attempt ids retain a UTC timestamp and phase id for operators and include a UUID
 Prompt and transcript files are created exclusively. If an artifact with the selected attempt id
 already exists, the runner stops instead of truncating or replacing it.
 
+## Schema 2 Attempt Lifecycle
+
+Schema 2 distinguishes work that has never started from an attempt whose terminal outcome was not
+durably recorded. Before creating attempt artifacts or launching a worker, the runner atomically
+records `active_attempt` with status `prepared`. That record contains the attempt and phase ids,
+the accepted plan path and SHA-256 snapshot, execution workspace, start time, and absolute prompt
+and transcript paths. Immediately after launch it replaces that record with status `running` and,
+when Linux process metadata is readable, records the PID, process-group id, boot id, and process
+start time. The boot id and start time prevent a later retry from treating an unrelated process
+that reused the numeric PID as the old worker.
+
+A terminal transition atomically clears `active_attempt` and records `last_run`. Completion also
+adds the phase id to `completed_phase_ids` and clears `current_phase`. Blocked, clarification, agent
+failure, marker failure, timeout, stop-regex, launch failure, interruption, and execution IO
+outcomes retain `current_phase` and create a typed `stop`. Clarification text remains in
+`stop.clarification_request`; other diagnostic text remains in `stop.message`. A launch failure
+after the prepared record exists and any attempt IO failure return exit code 4. A catchable SIGINT
+or SIGTERM records the interrupted outcome before the handler exits in response to that signal.
+Invalid plans, configuration, command templates, workspaces, or persisted state rejected before
+preparation return exit code 5.
+
+If the handler disappears while an attempt is prepared or running, the durable `active_attempt`
+is intentionally left unresolved. A normal `run` refuses to launch more work. `status` reports the
+attempt, workspace, prompt, transcript, and recorded PID without changing state, including when
+the current plan content has a hash mismatch. The operator must inspect those artifacts, inspect
+partial workspace changes, and stop any surviving worker before using `--retry-stopped`.
+
+On retry, a process is considered positively identified only when its current PID, process group,
+boot id, and start time all match the durable identity and it is not a zombie. The runner refuses
+to overlap such a worker. It never signals a process during recovery based only on a stored PID.
+An absent or mismatched identity permits the explicit retry because the operator has asserted that
+inspection and cleanup are complete. The old attempt is first resolved as `interrupted` with an
+unknown result, then the new prepared attempt and that resolution are written in one replacement.
+
+There is an unavoidable launch-to-identity-record window: the process can start after `prepared`
+is durable and the handler can die before `running` and its process identity are written. Such a
+record has unknown process identity. Treat it as potentially live and perform manual process
+inspection; the runner will neither guess liveness nor kill a numeric PID for it.
+
+State replacement can itself fail. If an ordinary terminal result or handled launch/IO failure
+cannot replace `state.json`, the last durable prepared/running attempt is retained and the
+invocation returns exit code 4. If interruption recording fails, the signal-driven exit continues
+and the active attempt remains unresolved. Both cases deliberately lose a known-but-not-durable
+result rather than erasing the evidence that execution occurred.
+
 ## Exclusive Execution Ownership
 
 Each `run` invocation takes a nonblocking advisory lock on the existing canonical plan-workspace
@@ -66,7 +111,41 @@ This is lifecycle management, not an OS sandbox. It cannot guarantee cleanup if 
 killed with SIGKILL, the container or kernel stops abruptly, or a descendant deliberately
 daemonizes into another session/process group. It also cannot make partial workspace edits
 exactly-once. After an abrupt interruption, inspect the workspace and process table before any
-manual retry; durable interrupted-attempt recovery is handled by a later state-schema phase.
+manual retry; the schema 2 active attempt makes that inspection and explicit retry mandatory.
+
+## Manual Schema 1 to Schema 2 Transition
+
+There is no automatic schema migration. Schema 1 could contain `current_phase` after a worker had
+started but did not retain enough attempt or process identity to determine whether that work was
+untouched, partially applied, or complete. Changing only `schema_version` would make an unsafe
+state appear valid.
+
+To convert an existing keyed `state.json`:
+
+1. Stop all handler and worker processes for the plan and back up its complete keyed history
+   directory, including state, prompts, and transcripts.
+2. Verify the stored `plan.path` is the intended canonical absolute plan path and its stored
+   `plan.sha256` matches the accepted snapshot. Preserve the plan record, completed phase ids, and
+   all timestamps exactly.
+3. Add `"active_attempt": null`. If schema 1 has a `current_phase` but no `stop`, do not clear it:
+   add a stop with `reason` set to `interrupted`, the same `phase_id`, a message explaining that the
+   legacy attempt outcome is unknown, and a null `clarification_request`. Inspect the workspace and
+   artifacts before eventually using `--retry-stopped`.
+4. Preserve an existing stop exactly, including its message or clarification request. Confirm its
+   phase id matches `current_phase` and is not listed as completed.
+5. Preserve `last_run`, but change its `status` only if necessary to one of the documented typed
+   values. Add `execution_workspace` from the corresponding phase/transcript header and add the
+   absolute prompt path under this plan's `prompts/` directory. Convert `transcript_path` to its
+   absolute path. Both artifact filenames must be `<last_run.run_id>.txt`; do not invent or move a
+   reference without checking the artifact.
+6. Set `schema_version` to `2`, write valid JSON to a separate file, then atomically replace
+   `state.json`. Run `status --plan PATH` and resolve every named key error before attempting a
+   retry.
+
+If a schema 1 field or artifact cannot be assigned confidently, keep the backup and make an
+explicit archive/fresh-start decision. Do not infer completion or fabricate an active process
+identity. A schema 1 `current_phase` without a stop must always be carried as an interrupted stop,
+even when no matching artifact can be found.
 
 ## Legacy Stem-Based Layout
 

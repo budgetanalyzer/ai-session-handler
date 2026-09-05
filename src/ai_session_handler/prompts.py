@@ -139,6 +139,24 @@ def summarize_previous_state(state: RunnerState) -> str:
             ]
         )
 
+    if state.active_attempt is None:
+        lines.append("active_attempt: none")
+    else:
+        attempt = state.active_attempt
+        lines.extend(
+            [
+                "active_attempt:",
+                f"  id: {attempt.id}",
+                f"  status: {attempt.status.value}",
+                f"  phase_id: {attempt.phase.id}",
+                f"  snapshot_sha256: {attempt.snapshot.sha256}",
+                f"  execution_workspace: {attempt.execution_workspace}",
+                f"  started_at: {attempt.started_at}",
+                f"  prompt_path: {attempt.prompt_path}",
+                f"  transcript_path: {attempt.transcript_path}",
+            ]
+        )
+
     if state.last_run is None:
         lines.append("last_run: none")
     else:
@@ -147,10 +165,12 @@ def summarize_previous_state(state: RunnerState) -> str:
                 "last_run:",
                 f"  run_id: {state.last_run.run_id}",
                 f"  phase_id: {state.last_run.phase_id}",
-                f"  status: {state.last_run.status}",
+                f"  status: {state.last_run.status.value}",
                 f"  started_at: {state.last_run.started_at}",
                 f"  finished_at: {state.last_run.finished_at}",
                 f"  exit_code: {state.last_run.exit_code}",
+                f"  execution_workspace: {state.last_run.execution_workspace}",
+                f"  prompt_path: {state.last_run.prompt_path}",
                 f"  transcript_path: {state.last_run.transcript_path}",
                 f"  summary: {state.last_run.summary}",
             ]

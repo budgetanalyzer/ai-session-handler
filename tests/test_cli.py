@@ -19,7 +19,7 @@ from ai_session_handler import __version__
 from ai_session_handler.cli import main
 from ai_session_handler.config import default_state_path, plan_generated_path
 from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVALID
-from ai_session_handler.state import RunnerState, read_state, write_state
+from ai_session_handler.state import ActiveAttemptStatus, RunnerState, read_state, write_state
 
 
 @pytest.fixture(autouse=True)
@@ -711,7 +711,12 @@ def test_competing_invocation_cannot_launch_same_phase_or_change_state(
     finally:
         _terminate_handler(holder_process)
 
-    released_result = _run_handler(tmp_path, plan_path, contender)
+    released_result = _run_handler(
+        tmp_path,
+        plan_path,
+        contender,
+        extra_cli_args=("--retry-stopped",),
+    )
     assert released_result.returncode == 0
     assert sentinel_path.exists()
 
@@ -885,6 +890,98 @@ def test_independent_workspaces_can_execute_concurrently(tmp_path: Path) -> None
                 _terminate_handler(process)
 
 
+def test_sigkill_attempt_requires_inspection_and_nonoverlapping_retry(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_text = _phase()
+    plan_path.write_text(plan_text, encoding="utf-8")
+    ready_path = tmp_path / "worker-ready"
+    abandoned_agent = tmp_path / "abandoned-agent.py"
+    abandoned_agent.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"Path({str(ready_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    completing_agent = tmp_path / "completing-agent.py"
+    completing_agent.write_text(
+        "print('<phase-complete>Recovered after inspection.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    handler = _start_handler(tmp_path, plan_path, abandoned_agent)
+    worker_pid: int | None = None
+
+    try:
+        _wait_for_readiness(handler, ready_path)
+        state_path = default_state_path(tmp_path, plan_path)
+        running = read_state(state_path)
+        assert running.active_attempt is not None
+        assert running.active_attempt.status is ActiveAttemptStatus.RUNNING
+        assert running.active_attempt.process is not None
+        worker_pid = running.active_attempt.process.pid
+
+        handler.kill()
+        assert handler.wait(timeout=3) == -signal.SIGKILL
+
+        abandoned = read_state(state_path)
+        assert abandoned.active_attempt == running.active_attempt
+
+        plan_path.write_text(plan_text.replace("Body", "Changed body"), encoding="utf-8")
+        state_before_status = state_path.read_bytes()
+        status_result = subprocess.run(
+            [sys.executable, "-m", "ai_session_handler", "status", "--plan", str(plan_path)],
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert status_result.returncode == EXIT_INVALID
+        assert "active/abandoned: phase-1" in status_result.stdout
+        assert f"attempt prompt: {running.active_attempt.prompt_path}" in status_result.stdout
+        assert "plan hash mismatch" in status_result.stderr
+        assert state_path.read_bytes() == state_before_status
+        plan_path.write_text(plan_text, encoding="utf-8")
+
+        ordinary_result = _run_handler(tmp_path, plan_path, completing_agent)
+        assert ordinary_result.returncode == EXIT_INVALID
+        assert "abandoned running attempt" in ordinary_result.stderr
+
+        overlapping_retry = _run_handler(
+            tmp_path,
+            plan_path,
+            completing_agent,
+            extra_cli_args=("--retry-stopped",),
+        )
+        assert overlapping_retry.returncode == EXIT_INVALID
+        assert f"worker pid {worker_pid} is still alive" in overlapping_retry.stderr
+
+        os.kill(worker_pid, signal.SIGKILL)
+        _wait_for_process_exit(worker_pid)
+
+        recovered = _run_handler(
+            tmp_path,
+            plan_path,
+            completing_agent,
+            extra_cli_args=("--retry-stopped",),
+        )
+        assert recovered.returncode == 0
+        final_state = read_state(state_path)
+        assert final_state.active_attempt is None
+        assert final_state.completed_phase_ids == ("phase-1",)
+    finally:
+        if handler.poll() is None:
+            handler.kill()
+        with suppress(subprocess.TimeoutExpired):
+            handler.wait(timeout=1)
+        if worker_pid is not None and _process_is_running(worker_pid):
+            with suppress(ProcessLookupError):
+                os.kill(worker_pid, signal.SIGKILL)
+
+
 def _phase(
     *,
     title: str = "One",
@@ -1000,3 +1097,19 @@ def _terminate_handler(process: subprocess.Popen[str]) -> None:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         process.communicate(timeout=1)
+
+
+def _process_is_running(process_id: int) -> bool:
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+def _wait_for_process_exit(process_id: int) -> None:
+    deadline = time.monotonic() + 3
+    while _process_is_running(process_id):
+        if time.monotonic() >= deadline:
+            pytest.fail(f"worker pid {process_id} did not exit")
+        time.sleep(0.01)
