@@ -18,6 +18,15 @@ markdown phase parsing, durable state, worker prompt generation, subprocess
 execution with transcripts, terminal marker handling, and `run`, `status`, and
 `init` CLI commands.
 
+Active contracts are split by concern:
+
+- [Plan format](docs/plan-format.md) defines executable plan structure and phase boundaries.
+- [Session lifecycle and acceptance](docs/session-lifecycle.md) distinguishes process, provider,
+  filesystem, persistence, and review guarantees.
+- [State and recovery](docs/state-and-recovery.md) defines generated layout and interruption
+  handling.
+- [Worker result protocol](docs/worker-protocol.md) defines terminal results and durable handoffs.
+
 ## Container Development Setup
 
 Requires Python 3.12 or newer inside the container. From
@@ -49,7 +58,7 @@ The core command shape is:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command-here"
 ```
 
@@ -57,6 +66,11 @@ By default, the runner executes every remaining phase, using a fresh agent
 process for each one, until the plan completes or a phase stops. Set
 `--max-phases 1` to stop after one successful phase, or use another positive
 integer to cap the phases executed in one invocation.
+
+A fresh child process is the runner guarantee. Whether the provider command starts a new
+conversation, resumes one, compacts context, or uses native subagents is determined by that
+command and its provider configuration. The handler also sets the child working directory but is
+not a filesystem sandbox. See [Session lifecycle and acceptance](docs/session-lifecycle.md).
 
 `--agent-cmd` is a command template, not a shell script. The plan path determines
 the plan workspace: `run` and `status` first resolve `--plan` against the caller's
@@ -86,7 +100,7 @@ example:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "./scripts/run-agent --metadata '{{\"mode\":\"fresh\"}}' --prompt={prompt_file}"
 ```
 
@@ -207,6 +221,9 @@ execution itself. Without stop regexes, the durable transcript is the full diagn
 
 ## Commands
 
+Run examples that omit `--agent-cmd` assume the inferred plan workspace's
+`.ai-session-handler/config.json` supplies `agent_cmd`.
+
 Create the optional example config and shared `plans/` directory:
 
 ```bash
@@ -217,7 +234,7 @@ Run all remaining phases:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command"
 ```
 
@@ -225,7 +242,7 @@ Run only the next incomplete phase:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command" \
   --max-phases 1
 ```
@@ -234,7 +251,7 @@ Run against another repository by passing the full plan path:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan /workspace/my-project/docs/plans/plan-22.md
+  --plan /workspace/my-project/docs/plans/feature-rollout.md
 ```
 
 Relative paths are interpreted from the directory where the command is run.
@@ -243,24 +260,24 @@ repository with:
 
 ```bash
 /workspace/ai-session-handler/.venv/bin/ai-session-handler status \
-  --plan ../docs/plans/plan-22.md
+  --plan ../docs/plans/feature-rollout.md
 ```
 
 From `/workspace/my-project`, a sibling repository can be addressed with
-`--plan ../other-project/docs/plans/plan-22.md`.
+`--plan ../other-project/docs/plans/feature-rollout.md`.
 
 Run without echoing agent progress while retaining the durable transcript:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan /workspace/my-project/docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --quiet
 ```
 
 Print durable state and the latest transcript and committed outcome paths:
 
 ```bash
-.venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
+.venv/bin/ai-session-handler status --plan /workspace/my-project/docs/plans/feature-rollout.md
 ```
 
 `status` prints the exact keyed state path as well as the plan workspace and
@@ -273,7 +290,7 @@ that phase explicitly:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command" \
   --retry-stopped
 ```
@@ -283,7 +300,7 @@ accepted and completed phase ids are verified to still exist:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command" \
   --accept-plan-change
 ```
@@ -292,7 +309,7 @@ When clarification both stopped the phase and changed the plan, combine the two 
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "your-agent-command" \
   --retry-stopped \
   --accept-plan-change
@@ -331,12 +348,11 @@ workspace headings inside fenced code blocks are examples, not executable struct
 fences use at least three backticks or tildes and must be closed with the same character and at
 least the opening length; an unclosed fence is an input error with its opening line reported.
 
-A plan follows `Plan -> Phase -> Execution steps`. Each phase represents one
-fresh, session-sized context allocation and contains one or more concrete
-execution steps. Ordinary phases should target roughly 25–35% of the context
-window and about ten minutes of focused work, with 40% treated as a warning
-threshold rather than a utilization target. Split broad work at independently
-verifiable checkpoints even when consecutive phases edit the same files.
+A plan follows `Plan -> Phase -> Execution steps`. Each phase is one fresh worker process and
+contains one or more concrete execution steps. Size phases first around coherent, independently
+verifiable checkpoints, even when consecutive phases edit the same files. Context targets such as
+25–35%, a roughly ten-minute duration, and a 40% warning point are only provisional calibration
+aids: the runner does not measure them, and they are not universal quality thresholds.
 Every phase also requires exactly one `### Workspace` section containing one
 relative path such as `.` or `../transaction-service`; see the canonical guide
 for phase-boundary and workspace rules. A phase performs execution work only in
@@ -352,11 +368,17 @@ active format contract.
 
 ## Provider Examples
 
+Provider-native continuation, compaction, and subagents can be used inside an appropriately
+configured worker process. They complement durable fresh-phase checkpoints; the handler does not
+schedule them or persist their internal thread structure. Keep model, tools, approvals, sandbox,
+and conversation choices in the provider command or external wrapper rather than inferring them
+from phase boundaries.
+
 Codex can be invoked directly when its CLI reads work from stdin:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "codex exec"
 ```
 
@@ -364,7 +386,7 @@ Claude or another CLI can be used the same way if it accepts stdin:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "claude"
 ```
 
@@ -373,7 +395,7 @@ wrapper script and keep that behavior outside the runner:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan docs/plans/plan-22.md \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
@@ -382,22 +404,30 @@ container-local virtualenv:
 
 ```bash
 .venv/bin/ai-session-handler run \
-  --plan /workspace/my-project/docs/plans/plan-22.md \
-  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model gpt-5.5"
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
+  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high"
 ```
 
-That wrapper is shipped by this project but remains outside runner internals. It
-sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output,
+That wrapper is shipped by this project but remains outside runner internals. It sets Codex's
+high-reasoning mode and requires a separately installed `codex-lean` executable. This repository
+does not install, own, or modify `/usr/local/bin/codex-lean`. That external launcher chooses Codex
+approvals, sandbox, tools, history, features, and defaults; inspect it before use. The Phase 11
+inspection found danger-full-access execution and disabled web search and native multi-agent
+features in this container. Those restrictions are independent of fresh phase execution.
+
+The wrapper runs `codex-lean exec` with non-colored output,
 streams stdout/stderr as Codex runs while filtering live terminal marker blocks and sanitizing
 diagnostic marker text. It captures the final message and re-emits a terminal result only after
 validating that file against the strict framing contract. This keeps the core runner
-provider-agnostic while preserving the runner's exactly-one-result contract. Its child remains in the process group
-created by the core runner, so lifecycle cleanup also reaches the provider
-process. Omit `--model` to use the Codex CLI default or the `CODEX_MODEL` value
-already present in the environment.
+provider-agnostic while preserving the runner's exactly-one-result contract. Its child remains in
+the process group created by the core runner, so lifecycle cleanup also reaches the provider
+process. Pass `--model MODEL` only for an explicit override. Omitting it preserves an existing
+`CODEX_MODEL` value or leaves selection to the external Codex configuration.
 
 A well-framed `phase-complete` result is still the worker's assertion, not automated review or
-user approval. Final acceptance remains a manual user decision.
+user approval. After `runner-complete`, inspect the changes and committed evidence, run final
+validation independently, and decide whether to accept the implementation. The handler stores no
+user-approval state; see the [manual final-review workflow](docs/session-lifecycle.md#manual-final-review).
 
 ## Exit Codes
 

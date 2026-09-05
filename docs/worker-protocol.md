@@ -41,16 +41,22 @@ cost, and regex execution itself has no time bound.
 
 These outcomes are worker assertions. `phase-complete` advances execution history, but it is not
 independent verification or user approval. The user remains responsible for reviewing the changes
-and validation evidence and for final semantic acceptance.
+and validation evidence and for final semantic acceptance. See
+[Session lifecycle and acceptance](session-lifecycle.md) for the intended final-review workflow.
 
 ## Fresh-Session Context and Handoffs
 
+Every selected phase runs in a fresh child process. The handler sets that process's working
+directory to the declared execution workspace, but it does not provide filesystem sandboxing or
+guarantee that a user-supplied provider command starts a new conversation. The prompt requires the
+worker to restrict execution work to the selected phase and workspace.
+
 Every worker prompt contains clearly delimited copies of the accepted plan's global preamble and
-the selected phase body. Workers must read both, follow referenced context, and perform execution
-work only for the selected phase in its declared execution workspace. The prompt also carries the
-latest relevant terminal summary and a compact phase/status/path index of earlier runner-committed
-outcomes. Workers should open indexed JSON records when earlier decisions or verification evidence
-is relevant; complete transcripts are retained separately rather than copied into each session.
+the selected phase body. Workers must read both and follow referenced context. The prompt also
+carries the latest relevant terminal summary and a compact phase/status/path index of earlier
+runner-committed outcomes. Workers should open indexed JSON records when earlier decisions or
+verification evidence is relevant; complete transcripts are retained separately rather than
+copied into each process.
 
 Every terminal result body remains plain text, with no runner-parsed internal heading grammar. It
 should concisely identify changed artifacts, validation commands and results, decisions, remaining

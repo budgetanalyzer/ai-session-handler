@@ -26,6 +26,9 @@ Attempt ids retain a UTC timestamp and phase id for operators and include a UUID
 Prompt, transcript, and outcome files are created exclusively. If an artifact with the selected
 attempt id already exists, the runner stops instead of truncating or replacing it.
 
+For the distinction between durable runner state, worker execution, and user acceptance, read
+[Session lifecycle and acceptance](session-lifecycle.md).
+
 ## Attempt Lifecycle
 
 Current state distinguishes work that has never started from an attempt whose terminal outcome was
@@ -56,6 +59,11 @@ writes an outcome but crashes or cannot replace state, that record remains usefu
 evidence but is uncommitted and is never adopted later as proof of success. The durable
 `active_attempt` still requires inspection and explicit retry. Recovery resolves that attempt as
 an unknown interruption; a later successful attempt receives its own id and outcome record.
+
+This commit ordering protects runner-owned history from a half-written success transition. It does
+not make the worker's repository edits atomic or exactly once. An interrupted worker may have made
+partial changes before state was committed, so an operator must inspect the execution workspace
+before retrying.
 
 Fresh worker prompts include the accepted plan's exact global preamble, the exact selected phase
 body, the latest relevant terminal summary, and a compact index of earlier committed outcome paths.

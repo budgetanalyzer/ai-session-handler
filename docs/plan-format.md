@@ -58,40 +58,31 @@ TODO
 
 ## Plans, Phases, And Execution Steps
 
-A plan contains one or more phases. A phase is one fresh agent session and contains one or more
-execution steps. Execution steps describe the concrete work within that session; they are not
-separate runner checkpoints.
+A plan contains one or more phases. A phase is one runner launch unit, executed by one fresh worker
+process, and contains one or more execution steps. Execution steps describe the concrete work
+within that process; they are not separate runner checkpoints. A new process is not by itself proof
+of a new provider conversation because the user-supplied command may resume provider-owned state.
+See [Session lifecycle and acceptance](session-lifecycle.md) for the precise boundary.
 
-Treat a phase as a conservative fresh-session allocation, not as a feature, issue, commit, or the
-largest body of work that could theoretically fit in one context window. The goal is to hand work
-to a fresh agent before long-session reasoning degrades or compaction becomes likely.
+Make a coherent, independently verifiable checkpoint the primary phase-sizing rule. A phase should
+leave the repository in an understandable state, run focused validation for its own work, and give
+the next worker durable evidence it can inspect. Split at the next point where a worker can finish
+one bounded concern without depending on partially implemented work from a later phase.
 
-Plan an ordinary phase around 25–35% of the available context window. Treat roughly 40% as a
-planning warning threshold, not a utilization target. The unused capacity is deliberate headroom
-for repository discovery, unexpected debugging, and validation. Context use is a planning
-calibration and is not measured by the runner.
-
-As a secondary calibration, an ordinary phase should represent roughly ten minutes of focused
-agent work under expected conditions. This is not a timeout or runtime guarantee, but a phase that
-plausibly requires 20–30 minutes before reaching its first durable checkpoint is too large and
-should be split.
-
-Default to a fresh phase at each independently verifiable implementation checkpoint. Start a new
-phase when at least one of these applies:
+Start a new phase when at least one of these applies:
 
 - the execution workspace or repository changes;
 - an independent decision or human review gate must occur between the work;
 - the transition is risky enough to require an isolated validation boundary;
 - the current milestone can leave a coherent, focused-test-passing state for the next milestone;
-- the phase contains more than about five substantial execution steps;
-- the phase spans three or more major concerns such as API contracts, controllers or adapters,
-  service/domain behavior, persistence, integration coverage, and documentation; or
-- the combined working set could approach 40% of a context window under expected conditions.
+- the phase spans several major concerns that have useful verification boundaries; or
+- expected discovery, implementation, debugging, and validation would make the checkpoint hard to
+  review or hand off as one unit.
 
 Shared files, abstractions, repository instructions, or validation commands are not reasons to
-merge substantial phases. A later worker can reread and modify the same files; that small warm-up
-cost is the intended tradeoff for fresh reasoning. Merge adjacent phases only when both are small,
-tightly coupled, and their combined work still satisfies the conservative size guidance above.
+merge substantial phases. A later worker can reread and modify the same files. Merge adjacent
+phases only when they are tightly coupled and their combined result still forms one coherent,
+independently verifiable checkpoint.
 
 A broad change spanning three or more major concerns should normally have at least three phases,
 even when every phase uses `.` and edits overlapping files. A typical vertical change might use:
@@ -104,6 +95,13 @@ Each phase must leave a durable, understandable worktree checkpoint. Its complet
 focused validation should state what a fresh next worker can rely on. Do not postpone all tests and
 coherence checks until the final phase; reserve the final full-suite phase for integration and
 hardening after earlier focused checks pass.
+
+Context percentages and elapsed-time estimates are optional, provisional calibration aids, not
+runner limits or universal quality thresholds. If no repository-specific measurements are
+available, 25–35% of an expected context window and roughly ten minutes of focused work can be used
+as starting estimates; approaching 40% can prompt a second look. The runner measures none of these,
+provider tools may compact context, and task complexity can make the estimates inaccurate. Prefer
+the useful checkpoint even when it is smaller or larger than a heuristic suggests.
 
 Repository switching is a hard phase boundary. A phase must perform implementation, validation,
 and other execution work in exactly one repository: its declared execution workspace. If any
@@ -172,9 +170,9 @@ process working directory and the value of the `{workspace}` command placeholder
 Headings such as `Stage`, `Workstream`, and `Issue` are planning or design headings, not execution
 boundaries. The parser only recognizes headings that match `Phase N: Title`.
 
-Convert a design document into an executable plan by choosing session-sized execution boundaries,
-grouping concrete steps inside them, and writing explicit `## Phase N: Title` headings. Do not rely
-on numbered lists or issue-local stage headings to imply phases.
+Convert a design document into an executable plan by choosing independently verifiable execution
+boundaries, grouping concrete steps inside them, and writing explicit `## Phase N: Title`
+headings. Do not rely on numbered lists or issue-local stage headings to imply phases.
 
 The accepted plan snapshot remains fixed for one invocation. The runner checks the source bytes
 again before each later worker launch and before reporting that the whole plan is complete. If a
