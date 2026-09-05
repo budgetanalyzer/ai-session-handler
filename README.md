@@ -126,6 +126,15 @@ The generated layout is:
             └── <attempt-id>.txt
 ```
 
+`run` uses nonblocking advisory locks on the canonical plan workspace and the selected execution
+workspace. One plan workspace therefore has only one active handler invocation, and plans from
+different roots cannot run phases concurrently when those phases target the same execution
+directory. Contention returns exit code 5 before launching a worker or changing attempt state; it
+does not queue or wait. No lock files are created in execution repositories. Locks coordinate only
+cooperating handler invocations, and release after a crash does not establish that interrupted work
+is complete or safe to retry. See [State and recovery](docs/state-and-recovery.md) for lock and
+recovery details.
+
 The runner streams child stdout and stderr to the same streams while also
 capturing both in the transcript. Terminal marker blocks are captured for
 parsing but hidden from the live console; the CLI prints the final phase result

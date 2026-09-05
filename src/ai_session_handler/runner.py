@@ -16,6 +16,8 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from errno import EACCES, EAGAIN
+from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
 from queue import Empty, Queue
 from types import FrameType
@@ -117,8 +119,22 @@ class _StreamFailure:
 type _OutputQueueItem = _StreamItem | _StreamFailure
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectoryOwnership:
+    device: int
+    inode: int
+
+    def owns(self, path: Path) -> bool:
+        directory = path.stat()
+        return (directory.st_dev, directory.st_ino) == (self.device, self.inode)
+
+
 class CommandTemplateError(ValueError):
     """Raised when an agent command template is invalid."""
+
+
+class ExecutionOwnershipError(RuntimeError):
+    """Raised when another handler invocation owns a required directory."""
 
 
 def run_phases(options: RunOptions) -> RunnerOutcome:
@@ -133,76 +149,118 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     _parse_command_template(options.agent_cmd)
 
     snapshot = read_plan_snapshot(options.plan_path)
-    phases = snapshot.phases
-    state = read_state(options.state_path)
-    state = ensure_plan_hash_matches(
-        state,
-        snapshot,
-        accept_plan_change=options.accept_plan_change,
-    )
+    with _own_directory(options.plan_workspace_path, scope="plan workspace") as plan_ownership:
+        phases = snapshot.phases
+        state = read_state(options.state_path)
+        state = ensure_plan_hash_matches(
+            state,
+            snapshot,
+            accept_plan_change=options.accept_plan_change,
+        )
 
-    retry_stopped = options.retry_stopped
-    phases_run = 0
-    while True:
-        if phases_run > 0:
-            ensure_plan_snapshot_unchanged(snapshot)
-        phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
-        retry_stopped = False
-        if phase is None:
-            if phases_run == 0:
+        retry_stopped = options.retry_stopped
+        phases_run = 0
+        while True:
+            if phases_run > 0:
                 ensure_plan_snapshot_unchanged(snapshot)
-            state = with_current_phase(replace(state, stop=None), None)
-            write_state(options.state_path, state)
-            return RunnerOutcome(EXIT_OK, "runner-complete: all phases complete", state)
+            phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
+            retry_stopped = False
+            if phase is None:
+                if phases_run == 0:
+                    ensure_plan_snapshot_unchanged(snapshot)
+                state = with_current_phase(replace(state, stop=None), None)
+                write_state(options.state_path, state)
+                return RunnerOutcome(EXIT_OK, "runner-complete: all phases complete", state)
 
-        execution_workspace_path = resolve_phase_workspace(
-            phase,
-            plan_workspace_path=options.plan_workspace_path,
-            source=str(snapshot.path),
+            execution_workspace_path = resolve_phase_workspace(
+                phase,
+                plan_workspace_path=options.plan_workspace_path,
+                source=str(snapshot.path),
+            )
+            with _own_execution_workspace(plan_ownership, execution_workspace_path):
+                state = with_current_phase(replace(state, stop=None), phase)
+                write_state(options.state_path, state)
+
+                run_id = create_run_id(phase)
+                current_transcript_path = transcript_path(options.state_path.parent, run_id)
+                prompt_context = PromptContext(
+                    plan_workspace_path=options.plan_workspace_path,
+                    execution_workspace_path=execution_workspace_path,
+                    plan_path=snapshot.path,
+                    state_path=options.state_path,
+                    phase=phase,
+                    state=state,
+                    run_id=run_id,
+                    transcript_path=current_transcript_path,
+                )
+                prompt_path = write_worker_prompt(options.state_path.parent, prompt_context)
+                prompt_text = render_worker_prompt(prompt_context)
+
+                process_result = run_agent_process(
+                    agent_cmd=options.agent_cmd,
+                    prompt_text=prompt_text,
+                    prompt_path=prompt_path,
+                    plan_workspace_path=options.plan_workspace_path,
+                    execution_workspace_path=execution_workspace_path,
+                    run_id=run_id,
+                    transcript_file=current_transcript_path,
+                    state_file=options.state_path,
+                    phase=phase,
+                    plan_path=snapshot.path,
+                    timeout_seconds=options.timeout_seconds,
+                    stop_patterns=stop_patterns,
+                    quiet=options.quiet,
+                )
+
+                state, outcome = apply_process_result(state, phase, run_id, process_result)
+                write_state(options.state_path, state)
+
+            if outcome.exit_code != EXIT_OK:
+                return outcome
+
+            phases_run += 1
+            if options.max_phases is not None and phases_run >= options.max_phases:
+                return outcome
+
+
+@contextmanager
+def _own_directory(path: Path, *, scope: str) -> Iterator[_DirectoryOwnership]:
+    canonical_path = path.resolve()
+    descriptor = os.open(canonical_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.set_inheritable(descriptor, False)
+        try:
+            flock(descriptor, LOCK_EX | LOCK_NB)
+        except OSError as error:
+            if error.errno not in {EACCES, EAGAIN}:
+                raise
+            raise ExecutionOwnershipError(
+                f"{scope} {canonical_path} is already owned by another "
+                "ai-session-handler invocation"
+            ) from error
+
+        directory = os.fstat(descriptor)
+        yield _DirectoryOwnership(
+            device=directory.st_dev,
+            inode=directory.st_ino,
         )
-        state = with_current_phase(replace(state, stop=None), phase)
-        write_state(options.state_path, state)
+    finally:
+        with suppress(OSError):
+            flock(descriptor, LOCK_UN)
+        os.close(descriptor)
 
-        run_id = create_run_id(phase)
-        current_transcript_path = transcript_path(options.state_path.parent, run_id)
-        prompt_context = PromptContext(
-            plan_workspace_path=options.plan_workspace_path,
-            execution_workspace_path=execution_workspace_path,
-            plan_path=snapshot.path,
-            state_path=options.state_path,
-            phase=phase,
-            state=state,
-            run_id=run_id,
-            transcript_path=current_transcript_path,
-        )
-        prompt_path = write_worker_prompt(options.state_path.parent, prompt_context)
-        prompt_text = render_worker_prompt(prompt_context)
 
-        process_result = run_agent_process(
-            agent_cmd=options.agent_cmd,
-            prompt_text=prompt_text,
-            prompt_path=prompt_path,
-            plan_workspace_path=options.plan_workspace_path,
-            execution_workspace_path=execution_workspace_path,
-            run_id=run_id,
-            transcript_file=current_transcript_path,
-            state_file=options.state_path,
-            phase=phase,
-            plan_path=snapshot.path,
-            timeout_seconds=options.timeout_seconds,
-            stop_patterns=stop_patterns,
-            quiet=options.quiet,
-        )
+@contextmanager
+def _own_execution_workspace(
+    plan_ownership: _DirectoryOwnership,
+    execution_workspace_path: Path,
+) -> Iterator[None]:
+    if plan_ownership.owns(execution_workspace_path):
+        yield
+        return
 
-        state, outcome = apply_process_result(state, phase, run_id, process_result)
-        write_state(options.state_path, state)
-
-        if outcome.exit_code != EXIT_OK:
-            return outcome
-
-        phases_run += 1
-        if options.max_phases is not None and phases_run >= options.max_phases:
-            return outcome
+    with _own_directory(execution_workspace_path, scope="execution workspace"):
+        yield
 
 
 def create_run_id(phase: Phase, *, timestamp: datetime | None = None) -> str:

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import signal
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -675,6 +679,212 @@ def test_config_named_plan_allows_normal_shared_config(
     assert captured.err == ""
 
 
+def test_competing_invocation_cannot_launch_same_phase_or_change_state(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    ready_path = tmp_path / "holder-ready"
+    holder = _write_blocking_agent(tmp_path, ready_path)
+    sentinel_path = tmp_path / "contender-launched"
+    contender = tmp_path / "contender.py"
+    contender.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Contender ran.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    holder_process = _start_handler(tmp_path, plan_path, holder)
+
+    try:
+        _wait_for_readiness(holder_process, ready_path)
+        state_path = default_state_path(tmp_path, plan_path)
+        state_before_contention = state_path.read_bytes()
+
+        contender_result = _run_handler(tmp_path, plan_path, contender)
+
+        assert contender_result.returncode == EXIT_INVALID
+        assert "plan workspace" in contender_result.stderr
+        assert "already owned by another ai-session-handler invocation" in contender_result.stderr
+        assert not sentinel_path.exists()
+        assert state_path.read_bytes() == state_before_contention
+    finally:
+        _terminate_handler(holder_process)
+
+    released_result = _run_handler(tmp_path, plan_path, contender)
+    assert released_result.returncode == 0
+    assert sentinel_path.exists()
+
+
+def test_separate_plans_in_one_plan_workspace_serialize(tmp_path: Path) -> None:
+    first_plan = tmp_path / "first.md"
+    second_plan = tmp_path / "second.md"
+    first_plan.write_text(_phase(), encoding="utf-8")
+    second_plan.write_text(_phase(), encoding="utf-8")
+    ready_path = tmp_path / "holder-ready"
+    holder = _write_blocking_agent(tmp_path, ready_path)
+    sentinel_path = tmp_path / "second-plan-launched"
+    contender = tmp_path / "contender.py"
+    contender.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    holder_process = _start_handler(tmp_path, first_plan, holder)
+
+    try:
+        _wait_for_readiness(holder_process, ready_path)
+
+        contender_result = _run_handler(tmp_path, second_plan, contender)
+
+        assert contender_result.returncode == EXIT_INVALID
+        assert f"plan workspace {tmp_path}" in contender_result.stderr
+        assert not sentinel_path.exists()
+        assert not default_state_path(tmp_path, second_plan).exists()
+    finally:
+        _terminate_handler(holder_process)
+
+
+def test_plans_from_different_roots_serialize_on_shared_execution_workspace(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first-root"
+    second_root = tmp_path / "second-root"
+    execution_workspace = tmp_path / "shared-service"
+    for workspace in (first_root, second_root, execution_workspace):
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
+    first_plan = first_root / "plan.md"
+    second_plan = second_root / "plan.md"
+    execution_alias = tmp_path / "shared-service-alias"
+    execution_alias.symlink_to(execution_workspace, target_is_directory=True)
+    first_plan.write_text(_phase(workspace="../shared-service"), encoding="utf-8")
+    second_plan.write_text(_phase(workspace="../shared-service-alias"), encoding="utf-8")
+    ready_path = tmp_path / "holder-ready"
+    holder = _write_blocking_agent(tmp_path, ready_path)
+    sentinel_path = tmp_path / "second-root-launched"
+    contender = tmp_path / "contender.py"
+    contender.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    holder_process = _start_handler(first_root, first_plan, holder)
+
+    try:
+        _wait_for_readiness(holder_process, ready_path)
+
+        contender_result = _run_handler(second_root, second_plan, contender)
+
+        assert contender_result.returncode == EXIT_INVALID
+        assert f"execution workspace {execution_workspace}" in contender_result.stderr
+        assert not sentinel_path.exists()
+        assert not default_state_path(second_root, second_plan).exists()
+    finally:
+        _terminate_handler(holder_process)
+
+
+def test_execution_contention_does_not_clear_stopped_retry_state(tmp_path: Path) -> None:
+    retry_root = tmp_path / "retry-root"
+    holder_root = tmp_path / "holder-root"
+    execution_workspace = tmp_path / "shared-service"
+    for workspace in (retry_root, holder_root, execution_workspace):
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
+    retry_plan = retry_root / "plan.md"
+    holder_plan = holder_root / "plan.md"
+    retry_plan.write_text(_phase(workspace="../shared-service"), encoding="utf-8")
+    holder_plan.write_text(_phase(workspace="../shared-service"), encoding="utf-8")
+    blocked_agent = tmp_path / "blocked.py"
+    blocked_agent.write_text(
+        "print('<phase-blocked>Intervention required.</phase-blocked>')\n",
+        encoding="utf-8",
+    )
+    assert _run_handler(retry_root, retry_plan, blocked_agent).returncode == EXIT_BLOCKED
+    retry_state_path = default_state_path(retry_root, retry_plan)
+    stopped_state = retry_state_path.read_bytes()
+
+    ready_path = tmp_path / "holder-ready"
+    holder = _write_blocking_agent(tmp_path, ready_path)
+    sentinel_path = tmp_path / "retry-launched"
+    retry_agent = tmp_path / "retry.py"
+    retry_agent.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Retried.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    holder_process = _start_handler(holder_root, holder_plan, holder)
+
+    try:
+        _wait_for_readiness(holder_process, ready_path)
+
+        retry_result = _run_handler(
+            retry_root,
+            retry_plan,
+            retry_agent,
+            extra_cli_args=("--retry-stopped",),
+        )
+
+        assert retry_result.returncode == EXIT_INVALID
+        assert f"execution workspace {execution_workspace}" in retry_result.stderr
+        assert retry_state_path.read_bytes() == stopped_state
+        assert not sentinel_path.exists()
+    finally:
+        _terminate_handler(holder_process)
+
+
+def test_independent_workspaces_can_execute_concurrently(tmp_path: Path) -> None:
+    processes: list[subprocess.Popen[str]] = []
+    ready_paths: list[Path] = []
+    release_paths: list[Path] = []
+    try:
+        for name in ("first", "second"):
+            workspace = tmp_path / name
+            workspace.mkdir()
+            (workspace / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
+            plan_path = workspace / "plan.md"
+            plan_path.write_text(_phase(), encoding="utf-8")
+            ready_path = workspace / "ready"
+            release_path = workspace / "release"
+            os.mkfifo(release_path)
+            agent = workspace / "agent.py"
+            agent.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "sys.stdin.read()\n"
+                "Path(sys.argv[1]).touch()\n"
+                "with Path(sys.argv[2]).open(encoding='utf-8') as release:\n"
+                "    release.read(1)\n"
+                "print('<phase-complete>Concurrent run complete.</phase-complete>')\n",
+                encoding="utf-8",
+            )
+            ready_paths.append(ready_path)
+            release_paths.append(release_path)
+            processes.append(
+                _start_handler(
+                    workspace,
+                    plan_path,
+                    agent,
+                    extra_agent_args=(str(ready_path), str(release_path)),
+                )
+            )
+
+        _wait_for_all_readiness(processes, ready_paths)
+        for release_path in release_paths:
+            release_path.write_text("x", encoding="utf-8")
+
+        results = [process.communicate(timeout=5) for process in processes]
+        assert [process.returncode for process in processes] == [0, 0]
+        assert all(stderr == "" for _, stderr in results)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                _terminate_handler(process)
+
+
 def _phase(
     *,
     title: str = "One",
@@ -683,3 +893,110 @@ def _phase(
     body: str = "Body\n",
 ) -> str:
     return f"## Phase {number}: {title}\n### Workspace\n\n{workspace}\n\n### Goal\n\n{body}"
+
+
+def _write_blocking_agent(directory: Path, ready_path: Path) -> Path:
+    release_path = directory / f"{ready_path.name}-release"
+    os.mkfifo(release_path)
+    agent = directory / f"{ready_path.name}-agent.py"
+    agent.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"Path({str(ready_path)!r}).touch()\n"
+        f"with Path({str(release_path)!r}).open(encoding='utf-8') as release:\n"
+        "    release.read(1)\n"
+        "print('<phase-complete>Holder complete.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    return agent
+
+
+def _handler_argv(
+    plan_path: Path,
+    agent_path: Path,
+    *,
+    extra_agent_args: tuple[str, ...] = (),
+) -> list[str]:
+    command_parts = [shlex.quote(sys.executable), shlex.quote(str(agent_path))]
+    command_parts.extend(shlex.quote(argument) for argument in extra_agent_args)
+    return [
+        sys.executable,
+        "-m",
+        "ai_session_handler",
+        "run",
+        "--plan",
+        str(plan_path),
+        "--agent-cmd",
+        " ".join(command_parts),
+        "--timeout",
+        "5",
+        "--quiet",
+    ]
+
+
+def _start_handler(
+    cwd: Path,
+    plan_path: Path,
+    agent_path: Path,
+    *,
+    extra_agent_args: tuple[str, ...] = (),
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        _handler_argv(plan_path, agent_path, extra_agent_args=extra_agent_args),
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _run_handler(
+    cwd: Path,
+    plan_path: Path,
+    agent_path: Path,
+    *,
+    extra_cli_args: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [*_handler_argv(plan_path, agent_path), *extra_cli_args],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def _wait_for_readiness(process: subprocess.Popen[str], ready_path: Path) -> None:
+    _wait_for_all_readiness([process], [ready_path])
+
+
+def _wait_for_all_readiness(
+    processes: list[subprocess.Popen[str]],
+    ready_paths: list[Path],
+) -> None:
+    deadline = time.monotonic() + 3
+    while not all(path.exists() for path in ready_paths):
+        for process in processes:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(
+                    f"handler exited before readiness ({process.returncode}): "
+                    f"stdout={stdout!r}, stderr={stderr!r}"
+                )
+        if time.monotonic() >= deadline:
+            pytest.fail("handler did not report readiness before the outer deadline")
+        time.sleep(0.01)
+
+
+def _terminate_handler(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.send_signal(signal.SIGTERM)
+    try:
+        process.communicate(timeout=4)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=1)

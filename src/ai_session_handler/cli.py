@@ -28,6 +28,7 @@ from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_INVALID,
     CommandTemplateError,
+    ExecutionOwnershipError,
     RunnerOutcome,
     RunOptions,
     run_phases,
@@ -162,6 +163,7 @@ def _run_command(args: argparse.Namespace) -> int:
     except (
         CommandTemplateError,
         ConfigError,
+        ExecutionOwnershipError,
         OSError,
         PlanParseError,
         StateError,

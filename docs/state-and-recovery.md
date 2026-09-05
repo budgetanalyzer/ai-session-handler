@@ -24,6 +24,28 @@ Attempt ids retain a UTC timestamp and phase id for operators and include a UUID
 Prompt and transcript files are created exclusively. If an artifact with the selected attempt id
 already exists, the runner stops instead of truncating or replacing it.
 
+## Exclusive Execution Ownership
+
+Each `run` invocation takes a nonblocking advisory lock on the existing canonical plan-workspace
+directory before it reads runner state. The lock is held for the entire invocation, so separate
+plans owned by one plan workspace cannot execute concurrently. Before changing state for a selected
+phase, the runner also locks that phase's canonical execution-workspace directory. It holds this
+lock through worker cleanup and durable result recording. When the plan and execution workspaces
+are the same directory, the already-held plan lock is reused.
+
+If either directory is already owned by another cooperating handler invocation, the contender
+returns immediately with exit code 5. It does not wait, launch a worker, clear a stopped phase, or
+change attempt state. The locks use `fcntl.flock` on directory descriptors and create no lock file
+or other generated artifact in an execution workspace. Lock descriptors are not inherited by
+worker commands. Canonical paths and directory identity make path aliases refer to the same lock.
+
+These are advisory Linux-container locks: they coordinate handler invocations but do not exclude
+editors, arbitrary tools, or programs that do not take the same locks. The OS releases a lock when
+the handler closes its descriptor or exits, including after abrupt process termination. That
+release establishes only that no live handler owns the lock; it does not prove that an interrupted
+worker made no partial edits or that its last outcome reached durable state. Inspect the workspace,
+processes, state, prompt, and transcript before retrying work after a crash.
+
 ## Worker Process Ownership
 
 The Linux-container runner starts every worker in a new POSIX session and process group. The
