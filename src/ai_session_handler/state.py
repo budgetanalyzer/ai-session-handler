@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
-from ai_session_handler.phases import Phase
+from ai_session_handler.phases import Phase, PlanSnapshot
 
 SCHEMA_VERSION: Final[int] = 1
 
@@ -179,27 +179,27 @@ def compute_plan_hash(path: Path) -> str:
 
 def accept_plan(
     state: RunnerState,
-    plan_path: Path,
-    phases: Sequence[Phase],
+    snapshot: PlanSnapshot,
     *,
     accepted_at: datetime | None = None,
 ) -> RunnerState:
     """Accept the current plan hash after validating completed phase ids still exist."""
-    phase_ids = {phase.id for phase in phases}
+    phase_ids = {phase.id for phase in snapshot.phases}
     missing_completed = [
         phase_id for phase_id in state.completed_phase_ids if phase_id not in phase_ids
     ]
     if missing_completed:
         missing = ", ".join(missing_completed)
         raise AcceptedPlanChangeError(
-            f"{plan_path}: cannot accept plan change; completed phase ids are missing: {missing}"
+            f"{snapshot.path}: cannot accept plan change; completed phase ids are missing: "
+            f"{missing}"
         )
 
     return replace(
         state,
         plan=PlanRecord(
-            path=str(plan_path),
-            sha256=compute_plan_hash(plan_path),
+            path=str(snapshot.path),
+            sha256=snapshot.sha256,
             accepted_at=format_utc_timestamp(accepted_at),
         ),
     )
@@ -207,28 +207,37 @@ def accept_plan(
 
 def ensure_plan_hash_matches(
     state: RunnerState,
-    plan_path: Path,
-    phases: Sequence[Phase],
+    snapshot: PlanSnapshot,
     *,
     accept_plan_change: bool = False,
     accepted_at: datetime | None = None,
 ) -> RunnerState:
     """Return state with an accepted plan hash or raise on an unsafe mismatch."""
     if state.plan is None:
-        return accept_plan(state, plan_path, phases, accepted_at=accepted_at)
+        return accept_plan(state, snapshot, accepted_at=accepted_at)
 
-    actual_sha256 = compute_plan_hash(plan_path)
-    if state.plan.sha256 == actual_sha256:
+    if state.plan.sha256 == snapshot.sha256:
         return state
 
     if accept_plan_change:
-        return accept_plan(state, plan_path, phases, accepted_at=accepted_at)
+        return accept_plan(state, snapshot, accepted_at=accepted_at)
 
     raise PlanHashMismatchError(
         expected_sha256=state.plan.sha256,
-        actual_sha256=actual_sha256,
-        plan_path=plan_path,
+        actual_sha256=snapshot.sha256,
+        plan_path=snapshot.path,
     )
+
+
+def ensure_plan_snapshot_unchanged(snapshot: PlanSnapshot) -> None:
+    """Raise when the source bytes no longer match an invocation's snapshot."""
+    actual_sha256 = compute_plan_hash(snapshot.path)
+    if actual_sha256 != snapshot.sha256:
+        raise PlanHashMismatchError(
+            expected_sha256=snapshot.sha256,
+            actual_sha256=actual_sha256,
+            plan_path=snapshot.path,
+        )
 
 
 def select_next_phase(

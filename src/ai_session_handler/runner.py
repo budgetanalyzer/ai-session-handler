@@ -25,7 +25,7 @@ from ai_session_handler.markers import (
     TerminalMarkerFilter,
     parse_terminal_marker,
 )
-from ai_session_handler.phases import Phase, parse_phase_file, resolve_phase_workspace
+from ai_session_handler.phases import Phase, read_plan_snapshot, resolve_phase_workspace
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
 from ai_session_handler.state import (
     LastRun,
@@ -33,6 +33,7 @@ from ai_session_handler.state import (
     StopReason,
     StopState,
     ensure_plan_hash_matches,
+    ensure_plan_snapshot_unchanged,
     format_utc_timestamp,
     read_state,
     select_next_phase,
@@ -115,21 +116,25 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     stop_patterns = _compile_stop_patterns(options.stop_on_regex)
     _parse_command_template(options.agent_cmd)
 
-    phases = parse_phase_file(options.plan_path)
+    snapshot = read_plan_snapshot(options.plan_path)
+    phases = snapshot.phases
     state = read_state(options.state_path)
     state = ensure_plan_hash_matches(
         state,
-        options.plan_path,
-        phases,
+        snapshot,
         accept_plan_change=options.accept_plan_change,
     )
 
     retry_stopped = options.retry_stopped
     phases_run = 0
     while True:
+        if phases_run > 0:
+            ensure_plan_snapshot_unchanged(snapshot)
         phase = select_next_phase(state, phases, retry_stopped=retry_stopped)
         retry_stopped = False
         if phase is None:
+            if phases_run == 0:
+                ensure_plan_snapshot_unchanged(snapshot)
             state = with_current_phase(replace(state, stop=None), None)
             write_state(options.state_path, state)
             return RunnerOutcome(EXIT_OK, "runner-complete: all phases complete", state)
@@ -137,7 +142,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         execution_workspace_path = resolve_phase_workspace(
             phase,
             plan_workspace_path=options.plan_workspace_path,
-            source=str(options.plan_path),
+            source=str(snapshot.path),
         )
         state = with_current_phase(replace(state, stop=None), phase)
         write_state(options.state_path, state)
@@ -147,7 +152,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
         prompt_context = PromptContext(
             plan_workspace_path=options.plan_workspace_path,
             execution_workspace_path=execution_workspace_path,
-            plan_path=options.plan_path,
+            plan_path=snapshot.path,
             state_path=options.state_path,
             phase=phase,
             state=state,
@@ -167,7 +172,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
             transcript_file=current_transcript_path,
             state_file=options.state_path,
             phase=phase,
-            plan_path=options.plan_path,
+            plan_path=snapshot.path,
             timeout_seconds=options.timeout_seconds,
             stop_patterns=stop_patterns,
             quiet=options.quiet,

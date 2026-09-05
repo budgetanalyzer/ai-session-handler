@@ -135,6 +135,18 @@ derived from those numbers, so `Phase 1` becomes `phase-1`.
 The body of a phase is preserved exactly from the line after its heading through the line before
 the next phase heading. Use the canonical sections above to make the work explicit.
 
+The plan must be valid UTF-8. At invocation initialization, the runner reads the plan bytes once,
+hashes those exact bytes, and parses the same read into an immutable snapshot. Line endings are
+not normalized: CRLF bytes contribute to the accepted hash and remain CRLF in captured preamble
+and phase bodies. Text before the first executable phase is the global preamble. It is retained as
+plan-wide intent in the snapshot, but it is not itself an execution unit.
+
+The supported fenced-code subset uses backtick or tilde fences of at least three matching
+characters, optionally indented by up to three spaces. A closing fence must use the same character
+and at least the opening length. Backtick fence info text cannot contain a backtick. Phase and
+workspace headings inside a valid fence are examples or code, not executable structure. An
+unclosed supported fence is a plan error reported at its opening line.
+
 ## Phase Workspace
 
 Every phase must contain exactly one `### Workspace` section. Its content must be exactly one
@@ -162,3 +174,9 @@ boundaries. The parser only recognizes headings that match `Phase N: Title`.
 Convert a design document into an executable plan by choosing session-sized execution boundaries,
 grouping concrete steps inside them, and writing explicit `## Phase N: Title` headings. Do not rely
 on numbered lists or issue-local stage headings to imply phases.
+
+The accepted plan snapshot remains fixed for one invocation. The runner checks the source bytes
+again before each later worker launch and before reporting that the whole plan is complete. If a
+worker or another process edits the source while a phase runs, that worker's recorded outcome is
+retained as an assertion about the original snapshot, but no later worker launches. Inspect the
+edit and use `--accept-plan-change` in a new invocation if the new plan should be accepted.

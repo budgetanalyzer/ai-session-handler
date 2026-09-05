@@ -202,6 +202,14 @@ accepted and completed phase ids are verified to still exist:
   --accept-plan-change
 ```
 
+Plan acceptance is snapshot-based. At invocation initialization, the runner hashes and parses one
+read of the exact UTF-8 source bytes; CRLF line endings are preserved and included in the hash. It
+uses that immutable snapshot for every phase selected by the invocation, then checks the source
+again before each subsequent worker launch and before reporting full completion. A change found at
+a checkpoint returns exit code 5 and launches no later worker. Any already recorded phase outcome
+is retained because it describes work performed from the original snapshot. `--accept-plan-change`
+only applies while initializing a new invocation, after completed phase ids are checked.
+
 ## Plan Format
 
 Executable plans are Markdown files with explicit numbered phase headings:
@@ -213,6 +221,11 @@ Executable plans are Markdown files with explicit numbered phase headings:
 Any Markdown heading level is accepted, but the heading text must be
 `Phase N: Title`. Phase numbers must be positive, unique, and strictly
 increasing. Phase bodies are preserved exactly between phase headings.
+
+Text before the first executable phase is retained as the plan's global preamble. Phase and
+workspace headings inside fenced code blocks are examples, not executable structure. The supported
+fences use at least three backticks or tildes and must be closed with the same character and at
+least the opening length; an unclosed fence is an input error with its opening line reported.
 
 A plan follows `Plan -> Phase -> Execution steps`. Each phase represents one
 fresh, session-sized context allocation and contains one or more concrete

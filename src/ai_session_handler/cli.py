@@ -20,7 +20,7 @@ from ai_session_handler.config import (
 from ai_session_handler.phases import (
     Phase,
     PlanParseError,
-    parse_phase_file,
+    read_plan_snapshot,
     resolve_phase_workspace,
 )
 from ai_session_handler.runner import (
@@ -154,6 +154,9 @@ def _run_command(args: argparse.Namespace) -> int:
     except StoppedStateError as error:
         _print_stopped_state_error(error, state_path, plan_path, plan_workspace_path)
         return EXIT_INVALID
+    except PlanHashMismatchError as error:
+        _print_plan_hash_mismatch(error)
+        return EXIT_INVALID
     except (
         CommandTemplateError,
         ConfigError,
@@ -178,13 +181,12 @@ def _status_command(args: argparse.Namespace) -> int:
     state_path = default_state_path(plan_workspace_path, plan_path)
 
     try:
-        phases = parse_phase_file(plan_path)
+        snapshot = read_plan_snapshot(plan_path)
+        phases = snapshot.phases
         state = read_state(state_path)
-        ensure_plan_hash_matches(state, plan_path, phases)
+        ensure_plan_hash_matches(state, snapshot)
     except PlanHashMismatchError as error:
-        print(f"plan hash mismatch: {error.plan_path}", file=sys.stderr)
-        print(f"expected: {error.expected_sha256}", file=sys.stderr)
-        print(f"actual:   {error.actual_sha256}", file=sys.stderr)
+        _print_plan_hash_mismatch(error)
         return EXIT_INVALID
     except (OSError, PlanParseError, StateError) as error:
         _print_error(str(error))
@@ -264,7 +266,7 @@ def _print_stopped_state_error(
         print(f"message: {error.stop.message}", file=sys.stderr)
     print(f"plan workspace path: {plan_workspace_path}", file=sys.stderr)
     try:
-        phase = _phase_by_id(parse_phase_file(plan_path), error.stop.phase_id)
+        phase = _phase_by_id(read_plan_snapshot(plan_path).phases, error.stop.phase_id)
         execution_workspace_path = resolve_phase_workspace(
             phase,
             plan_workspace_path=plan_workspace_path,
@@ -298,6 +300,12 @@ def _print_run_outcome(outcome: RunnerOutcome) -> None:
     if outcome.state.last_run is not None:
         print(f"transcript: {outcome.state.last_run.transcript_path}", file=sys.stderr)
         _print_transcript_tail(Path(outcome.state.last_run.transcript_path), sys.stderr)
+
+
+def _print_plan_hash_mismatch(error: PlanHashMismatchError) -> None:
+    print(f"plan hash mismatch: {error.plan_path}", file=sys.stderr)
+    print(f"expected: {error.expected_sha256}", file=sys.stderr)
+    print(f"actual:   {error.actual_sha256}", file=sys.stderr)
 
 
 def _print_transcript_tail(path: Path, stream: TextIO) -> None:

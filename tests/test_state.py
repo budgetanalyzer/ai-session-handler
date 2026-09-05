@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_session_handler.phases import Phase, parse_phases
+from ai_session_handler.phases import Phase, parse_phases, read_plan_snapshot
 from ai_session_handler.state import (
     AcceptedPlanChangeError,
     LastRun,
@@ -81,12 +81,11 @@ def test_compute_plan_hash_reads_plan_bytes(tmp_path: Path) -> None:
 
 def test_new_state_accepts_current_plan_hash(tmp_path: Path) -> None:
     plan_path = _write_plan(tmp_path, _plan("One", "Body\n"))
-    phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    snapshot = read_plan_snapshot(plan_path)
 
     state = ensure_plan_hash_matches(
         RunnerState(),
-        plan_path,
-        phases,
+        snapshot,
         accepted_at=ACCEPTED_AT,
     )
 
@@ -113,17 +112,16 @@ def test_completed_phase_selection_returns_none_when_all_complete() -> None:
 
 def test_plan_hash_mismatch_is_rejected_by_default(tmp_path: Path) -> None:
     plan_path = _write_plan(tmp_path, _plan("One", "Original\n"))
-    phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    snapshot = read_plan_snapshot(plan_path)
     state = ensure_plan_hash_matches(
         RunnerState(),
-        plan_path,
-        phases,
+        snapshot,
         accepted_at=ACCEPTED_AT,
     )
     plan_path.write_text(_plan("One", "Changed\n"), encoding="utf-8")
 
     with pytest.raises(PlanHashMismatchError):
-        ensure_plan_hash_matches(state, plan_path, phases)
+        ensure_plan_hash_matches(state, read_plan_snapshot(plan_path))
 
 
 def test_retry_stopped_is_required_for_stopped_state() -> None:
@@ -143,23 +141,21 @@ def test_accept_plan_change_updates_hash_when_completed_phase_ids_still_exist(
     tmp_path: Path,
 ) -> None:
     plan_path = _write_plan(tmp_path, _plan("One", "Original\n") + _plan("Two", "", number=2))
-    phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    snapshot = read_plan_snapshot(plan_path)
     state = ensure_plan_hash_matches(
         RunnerState(completed_phase_ids=("phase-1",)),
-        plan_path,
-        phases,
+        snapshot,
         accepted_at=ACCEPTED_AT,
     )
     plan_path.write_text(
         _plan("One Renamed", "Changed\n") + _plan("Two", "", number=2),
         encoding="utf-8",
     )
-    changed_phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    changed_snapshot = read_plan_snapshot(plan_path)
 
     accepted = ensure_plan_hash_matches(
         state,
-        plan_path,
-        changed_phases,
+        changed_snapshot,
         accept_plan_change=True,
         accepted_at=datetime(2026, 7, 5, 13, 0, 0, tzinfo=UTC),
     )
@@ -174,21 +170,19 @@ def test_accept_plan_change_updates_hash_when_completed_phase_ids_still_exist(
 
 def test_accept_plan_change_rejects_missing_completed_phase_ids(tmp_path: Path) -> None:
     plan_path = _write_plan(tmp_path, _plan("One", "Original\n") + _plan("Two", "", number=2))
-    phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    snapshot = read_plan_snapshot(plan_path)
     state = accept_plan(
         RunnerState(completed_phase_ids=("phase-1",)),
-        plan_path,
-        phases,
+        snapshot,
         accepted_at=ACCEPTED_AT,
     )
     plan_path.write_text(_plan("Two", "Changed\n", number=2), encoding="utf-8")
-    changed_phases = parse_phases(plan_path.read_text(encoding="utf-8"), source=str(plan_path))
+    changed_snapshot = read_plan_snapshot(plan_path)
 
     with pytest.raises(AcceptedPlanChangeError):
         ensure_plan_hash_matches(
             state,
-            plan_path,
-            changed_phases,
+            changed_snapshot,
             accept_plan_change=True,
             accepted_at=ACCEPTED_AT,
         )

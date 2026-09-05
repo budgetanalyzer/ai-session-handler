@@ -21,7 +21,7 @@ from ai_session_handler.runner import (
     render_command_template,
     run_phases,
 )
-from ai_session_handler.state import StopReason, read_state
+from ai_session_handler.state import PlanHashMismatchError, StopReason, read_state
 
 
 @pytest.fixture(autouse=True)
@@ -387,6 +387,86 @@ def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
     assert outcome.exit_code == EXIT_OK
     assert state.completed_phase_ids == ("phase-1", "phase-2")
     assert record_path.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_plan_edit_after_phase_stops_before_next_worker(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(
+        "## Phase 1: One\n### Workspace\n.\n### Goal\nFirst original.\n"
+        "## Phase 2: Two\n### Workspace\n.\n### Goal\nSecond original.\n",
+        encoding="utf-8",
+    )
+    record_path = tmp_path / "runs.txt"
+    script = _write_agent(
+        tmp_path,
+        "edit-plan.py",
+        "from pathlib import Path\n"
+        "import sys\n"
+        "prompt = sys.stdin.read()\n"
+        "plan_path = Path(sys.argv[1])\n"
+        "record_path = Path(sys.argv[2])\n"
+        "with record_path.open('a', encoding='utf-8') as record:\n"
+        "    record.write(('phase-1' if 'selected_phase_id: phase-1' in prompt "
+        "else 'phase-2') + '\\n')\n"
+        "if 'selected_phase_id: phase-1' in prompt:\n"
+        "    text = plan_path.read_text(encoding='utf-8')\n"
+        "    plan_path.write_text(text.replace('Second original.', 'Second edited.'), "
+        "encoding='utf-8')\n"
+        "print('<phase-complete>Completed snapshot phase.</phase-complete>')\n",
+    )
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+        f"{shlex.quote(str(plan_path))} {shlex.quote(str(record_path))}"
+    )
+    options = RunOptions(
+        plan_workspace_path=tmp_path,
+        plan_path=plan_path,
+        state_path=tmp_path / ".ai-session-handler" / "plan.json",
+        agent_cmd=command,
+        timeout_seconds=5,
+    )
+
+    with pytest.raises(PlanHashMismatchError):
+        run_phases(options)
+
+    state = read_state(options.state_path)
+    assert state.completed_phase_ids == ("phase-1",)
+    assert state.last_run is not None
+    assert state.last_run.summary == "Completed snapshot phase."
+    assert record_path.read_text(encoding="utf-8").splitlines() == ["phase-1"]
+
+
+def test_plan_edit_during_last_phase_prevents_runner_complete(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "edit-last-plan.py",
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "plan_path = Path(sys.argv[1])\n"
+        "plan_path.write_text(plan_path.read_text(encoding='utf-8') + '\\nEdited.\\n', "
+        "encoding='utf-8')\n"
+        "print('<phase-complete>Last phase snapshot complete.</phase-complete>')\n",
+    )
+    options = RunOptions(
+        plan_workspace_path=tmp_path,
+        plan_path=plan_path,
+        state_path=tmp_path / ".ai-session-handler" / "plan.json",
+        agent_cmd=(
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+            f"{shlex.quote(str(plan_path))}"
+        ),
+        timeout_seconds=5,
+    )
+
+    with pytest.raises(PlanHashMismatchError):
+        run_phases(options)
+
+    state = read_state(options.state_path)
+    assert state.completed_phase_ids == ("phase-1",)
+    assert state.last_run is not None
+    assert state.last_run.summary == "Last phase snapshot complete."
 
 
 def test_consecutive_phases_use_distinct_workspaces_and_plan_owned_artifacts(

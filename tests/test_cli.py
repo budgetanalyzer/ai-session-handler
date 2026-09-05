@@ -253,6 +253,48 @@ def test_invalid_command_template_returns_input_error_without_launching_worker(
     assert not (tmp_path / ".ai-session-handler" / "transcripts").exists()
 
 
+def test_plan_edit_during_run_returns_hash_mismatch_after_recording_outcome(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"plan_path = Path({str(plan_path)!r})\n"
+        "plan_path.write_text(plan_path.read_text(encoding='utf-8') + '\\nEdited.\\n', "
+        "encoding='utf-8')\n"
+        "print('<phase-complete>Completed accepted snapshot.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    assert exit_code == EXIT_INVALID
+    assert captured.out.strip() == ""
+    assert f"plan hash mismatch: {plan_path}" in captured.err
+    assert "expected:" in captured.err
+    assert "actual:" in captured.err
+    assert state.completed_phase_ids == ("phase-1",)
+    assert state.last_run is not None
+    assert state.last_run.summary == "Completed accepted snapshot."
+
+
 def test_run_agent_failure_reports_error_details_to_stderr(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
