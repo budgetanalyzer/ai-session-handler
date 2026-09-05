@@ -101,6 +101,7 @@ class ActiveAttempt:
     started_at: str
     prompt_path: str
     transcript_path: str
+    outcome_path: str
     process: ProcessIdentity | None = None
 
 
@@ -127,7 +128,18 @@ class LastRun:
     execution_workspace: str
     prompt_path: str
     transcript_path: str
+    outcome_path: str | None
     summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeRef:
+    """A terminal outcome record made authoritative by runner state."""
+
+    attempt_id: str
+    phase_id: str
+    status: AttemptStatus
+    path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +148,7 @@ class RunnerState:
 
     plan: PlanRecord | None = None
     completed_phase_ids: tuple[str, ...] = ()
+    committed_outcomes: tuple[OutcomeRef, ...] = ()
     current_phase: PhaseRef | None = None
     active_attempt: ActiveAttempt | None = None
     stop: StopState | None = None
@@ -223,6 +236,7 @@ def read_state(path: Path) -> RunnerState:
             {
                 "plan",
                 "completed_phase_ids",
+                "committed_outcomes",
                 "current_phase",
                 "active_attempt",
                 "stop",
@@ -236,6 +250,13 @@ def read_state(path: Path) -> RunnerState:
         ),
         completed_phase_ids=tuple(
             _string_sequence_at(data, "completed_phase_ids", source=str(path))
+        ),
+        committed_outcomes=tuple(
+            _outcome_refs_from_json(
+                _value_at(data, "committed_outcomes", source=str(path)),
+                source=str(path),
+                key="committed_outcomes",
+            )
         ),
         current_phase=_phase_ref_from_json(
             _value_at(data, "current_phase", source=str(path)),
@@ -438,6 +459,13 @@ def _validate_state(state: RunnerState, path: Path) -> None:
             source=source,
             key="active_attempt.transcript_path",
         )
+        _validate_artifact_path(
+            attempt.outcome_path,
+            expected_parent=path.parent / "outcomes",
+            expected_name=f"{attempt.id}.json",
+            source=source,
+            key="active_attempt.outcome_path",
+        )
         if attempt.status is ActiveAttemptStatus.PREPARED and attempt.process is not None:
             raise StateError(f"{source}: prepared active_attempt.process must be null")
         if attempt.process is not None:
@@ -463,6 +491,20 @@ def _validate_state(state: RunnerState, path: Path) -> None:
             )
     if state.current_phase is not None and state.active_attempt is None and state.stop is None:
         raise StateError(f"{source}: current_phase requires active_attempt or stop")
+    attempt_ids = [outcome.attempt_id for outcome in state.committed_outcomes]
+    if len(set(attempt_ids)) != len(attempt_ids):
+        raise StateError(f"{source}: committed_outcomes contains duplicate attempt ids")
+    for index, outcome in enumerate(state.committed_outcomes):
+        key = f"committed_outcomes[{index}]"
+        _validate_nonempty(outcome.attempt_id, source=source, key=f"{key}.attempt_id")
+        _validate_nonempty(outcome.phase_id, source=source, key=f"{key}.phase_id")
+        _validate_artifact_path(
+            outcome.path,
+            expected_parent=path.parent / "outcomes",
+            expected_name=f"{outcome.attempt_id}.json",
+            source=source,
+            key=f"{key}.path",
+        )
     if state.last_run is not None:
         last_run = state.last_run
         _validate_nonempty(last_run.run_id, source=source, key="last_run.run_id")
@@ -488,6 +530,18 @@ def _validate_state(state: RunnerState, path: Path) -> None:
             source=source,
             key="last_run.transcript_path",
         )
+        if last_run.outcome_path is not None:
+            _validate_artifact_path(
+                last_run.outcome_path,
+                expected_parent=path.parent / "outcomes",
+                expected_name=f"{last_run.run_id}.json",
+                source=source,
+                key="last_run.outcome_path",
+            )
+        elif last_run.status is not AttemptStatus.INTERRUPTED:
+            raise StateError(
+                f"{source}: only an interrupted recovery may omit last_run.outcome_path"
+            )
         expected_exit_code = {
             AttemptStatus.PHASE_COMPLETE: 0,
             AttemptStatus.BLOCKED: 2,
@@ -502,6 +556,17 @@ def _validate_state(state: RunnerState, path: Path) -> None:
             and last_run.phase_id not in state.completed_phase_ids
         ):
             raise StateError(f"{source}: completed last_run.phase_id is not in completed_phase_ids")
+        if last_run.outcome_path is not None:
+            expected_ref = OutcomeRef(
+                attempt_id=last_run.run_id,
+                phase_id=last_run.phase_id,
+                status=last_run.status,
+                path=last_run.outcome_path,
+            )
+            if not state.committed_outcomes or state.committed_outcomes[-1] != expected_ref:
+                raise StateError(
+                    f"{source}: last_run outcome must be the latest committed_outcomes entry"
+                )
 
 
 def _validate_phase_ref(value: PhaseRef, *, source: str, key: str) -> None:
@@ -554,6 +619,15 @@ def _state_to_json(state: RunnerState) -> Mapping[str, object]:
     return {
         "plan": _plan_record_to_json(state.plan),
         "completed_phase_ids": list(state.completed_phase_ids),
+        "committed_outcomes": [
+            {
+                "attempt_id": outcome.attempt_id,
+                "phase_id": outcome.phase_id,
+                "status": outcome.status.value,
+                "path": outcome.path,
+            }
+            for outcome in state.committed_outcomes
+        ],
         "current_phase": _phase_ref_to_json(state.current_phase),
         "active_attempt": _active_attempt_to_json(state.active_attempt),
         "stop": None
@@ -576,6 +650,7 @@ def _state_to_json(state: RunnerState) -> Mapping[str, object]:
             "execution_workspace": state.last_run.execution_workspace,
             "prompt_path": state.last_run.prompt_path,
             "transcript_path": state.last_run.transcript_path,
+            "outcome_path": state.last_run.outcome_path,
             "summary": state.last_run.summary,
         },
     }
@@ -605,6 +680,7 @@ def _active_attempt_to_json(value: ActiveAttempt | None) -> Mapping[str, object]
         "started_at": value.started_at,
         "prompt_path": value.prompt_path,
         "transcript_path": value.transcript_path,
+        "outcome_path": value.outcome_path,
         "process": None
         if value.process is None
         else {
@@ -671,6 +747,7 @@ def _active_attempt_from_json(value: object, *, source: str, key: str) -> Active
                 "started_at",
                 "prompt_path",
                 "transcript_path",
+                "outcome_path",
                 "process",
             }
         ),
@@ -695,6 +772,7 @@ def _active_attempt_from_json(value: object, *, source: str, key: str) -> Active
         started_at=_string_at(data, "started_at", source=source),
         prompt_path=_string_at(data, "prompt_path", source=source),
         transcript_path=_string_at(data, "transcript_path", source=source),
+        outcome_path=_string_at(data, "outcome_path", source=source),
         process=_process_identity_from_json(
             _value_at(data, "process", source=source), source=source, key=f"{key}.process"
         ),
@@ -753,6 +831,7 @@ def _last_run_from_json(value: object, *, source: str, key: str) -> LastRun | No
                 "execution_workspace",
                 "prompt_path",
                 "transcript_path",
+                "outcome_path",
                 "summary",
             }
         ),
@@ -767,8 +846,32 @@ def _last_run_from_json(value: object, *, source: str, key: str) -> LastRun | No
         execution_workspace=_string_at(data, "execution_workspace", source=source),
         prompt_path=_string_at(data, "prompt_path", source=source),
         transcript_path=_string_at(data, "transcript_path", source=source),
+        outcome_path=_optional_string_at(data, "outcome_path", source=source),
         summary=_string_at(data, "summary", source=source),
     )
+
+
+def _outcome_refs_from_json(value: object, *, source: str, key: str) -> list[OutcomeRef]:
+    if not isinstance(value, list):
+        raise StateError(f"{source}: expected {key} to be a list")
+    outcomes: list[OutcomeRef] = []
+    for index, item in enumerate(value):
+        item_key = f"{key}[{index}]"
+        data = _expect_mapping(
+            item,
+            source=source,
+            key=item_key,
+            allowed_keys=frozenset({"attempt_id", "phase_id", "status", "path"}),
+        )
+        outcomes.append(
+            OutcomeRef(
+                attempt_id=_string_at(data, "attempt_id", source=source),
+                phase_id=_string_at(data, "phase_id", source=source),
+                status=_enum_at(data, "status", AttemptStatus, source=source),
+                path=_string_at(data, "path", source=source),
+            )
+        )
+    return outcomes
 
 
 def _expect_mapping(

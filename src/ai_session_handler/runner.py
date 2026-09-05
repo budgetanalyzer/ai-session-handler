@@ -33,6 +33,12 @@ from ai_session_handler.markers import (
     TerminalMarkerFilter,
     parse_terminal_marker,
 )
+from ai_session_handler.outcomes import (
+    OutcomeArtifacts,
+    OutcomeRecord,
+    outcome_path,
+    write_outcome,
+)
 from ai_session_handler.phases import Phase, read_plan_snapshot, resolve_phase_workspace
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
 from ai_session_handler.state import (
@@ -41,6 +47,7 @@ from ai_session_handler.state import (
     ActiveWorkerError,
     AttemptStatus,
     LastRun,
+    OutcomeRef,
     PhaseRef,
     ProcessIdentity,
     RunnerState,
@@ -209,6 +216,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                 run_id = create_run_id(phase)
                 current_transcript_path = transcript_path(options.state_path.parent, run_id)
                 current_prompt_path = options.state_path.parent / "prompts" / f"{run_id}.txt"
+                current_outcome_path = outcome_path(options.state_path.parent, run_id)
                 if abandoned_attempt is not None:
                     state = _resolve_abandoned_attempt(state, abandoned_attempt)
                 active_attempt = ActiveAttempt(
@@ -220,6 +228,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                     started_at=format_utc_timestamp(),
                     prompt_path=str(current_prompt_path),
                     transcript_path=str(current_transcript_path),
+                    outcome_path=str(current_outcome_path),
                 )
                 state = replace(
                     state,
@@ -244,6 +253,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                     state=state,
                     run_id=run_id,
                     transcript_path=current_transcript_path,
+                    plan_preamble=snapshot.preamble,
                 )
                 try:
                     prompt_path = write_worker_prompt(options.state_path.parent, prompt_context)
@@ -294,6 +304,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                         "handler interrupted while the worker was active",
                     )
                     with suppress(OSError):
+                        _write_transition_outcome(state, interrupted)
                         write_state(options.state_path, interrupted)
                     raise
                 except OSError as error:
@@ -305,6 +316,14 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
                     )
 
                 updated_state, outcome = apply_process_result(state, phase, process_result)
+                try:
+                    _write_transition_outcome(state, updated_state)
+                except OSError as error:
+                    return RunnerOutcome(
+                        EXIT_AGENT_FAILED,
+                        f"execution-io-failed: could not write attempt outcome: {error}",
+                        state,
+                    )
                 try:
                     write_state(options.state_path, updated_state)
                 except OSError as error:
@@ -700,6 +719,7 @@ def apply_process_result(
                 EXIT_OK,
             ),
         )
+        updated = _with_committed_outcome(updated)
         return updated, RunnerOutcome(EXIT_OK, f"phase-complete: {phase.id}", updated)
 
     if marker.kind is MarkerKind.BLOCKED:
@@ -709,6 +729,7 @@ def apply_process_result(
             stop=StopState(reason=StopReason.BLOCKED, phase_id=phase.id, message=marker.text),
             last_run=_last_run(attempt, AttemptStatus.BLOCKED, result, marker.text, EXIT_BLOCKED),
         )
+        updated = _with_committed_outcome(updated)
         return updated, RunnerOutcome(EXIT_BLOCKED, f"phase-blocked: {marker.text}", updated)
 
     updated = replace(
@@ -727,6 +748,7 @@ def apply_process_result(
             EXIT_NEEDS_CLARIFICATION,
         ),
     )
+    updated = _with_committed_outcome(updated)
     return (
         updated,
         RunnerOutcome(
@@ -757,6 +779,7 @@ def _stopped_runner_failure(
             EXIT_AGENT_FAILED,
         ),
     )
+    updated = _with_committed_outcome(updated)
     return updated, RunnerOutcome(EXIT_AGENT_FAILED, f"{reason.value}: {message}", updated)
 
 
@@ -777,6 +800,7 @@ def _last_run(
         execution_workspace=attempt.execution_workspace,
         prompt_path=attempt.prompt_path,
         transcript_path=str(result.transcript_path),
+        outcome_path=attempt.outcome_path,
         summary=summary,
     )
 
@@ -799,13 +823,16 @@ def _attempt_failure_state(
         execution_workspace=attempt.execution_workspace,
         prompt_path=attempt.prompt_path,
         transcript_path=attempt.transcript_path,
+        outcome_path=attempt.outcome_path,
         summary=message,
     )
-    return replace(
-        state,
-        active_attempt=None,
-        stop=StopState(reason=reason, phase_id=attempt.phase.id, message=message),
-        last_run=last_run,
+    return _with_committed_outcome(
+        replace(
+            state,
+            active_attempt=None,
+            stop=StopState(reason=reason, phase_id=attempt.phase.id, message=message),
+            last_run=last_run,
+        )
     )
 
 
@@ -816,6 +843,14 @@ def _record_attempt_failure(
     message: str,
 ) -> RunnerOutcome:
     updated = _attempt_failure_state(state, reason, message)
+    try:
+        _write_transition_outcome(state, updated)
+    except OSError as write_error:
+        return RunnerOutcome(
+            EXIT_AGENT_FAILED,
+            f"{reason.value}: {message}; could not write attempt outcome: {write_error}",
+            state,
+        )
     try:
         write_state(state_path, updated)
     except OSError as write_error:
@@ -846,7 +881,47 @@ def _resolve_abandoned_attempt(
             execution_workspace=attempt.execution_workspace,
             prompt_path=attempt.prompt_path,
             transcript_path=attempt.transcript_path,
+            outcome_path=None,
             summary=message,
+        ),
+    )
+
+
+def _with_committed_outcome(state: RunnerState) -> RunnerState:
+    last_run = state.last_run
+    if last_run is None or last_run.outcome_path is None:
+        raise ValueError("committed outcome transition requires a linked last run")
+    reference = OutcomeRef(
+        attempt_id=last_run.run_id,
+        phase_id=last_run.phase_id,
+        status=last_run.status,
+        path=last_run.outcome_path,
+    )
+    return replace(state, committed_outcomes=(*state.committed_outcomes, reference))
+
+
+def _write_transition_outcome(previous: RunnerState, updated: RunnerState) -> None:
+    attempt = previous.active_attempt
+    last_run = updated.last_run
+    if attempt is None or last_run is None or last_run.run_id != attempt.id:
+        raise ValueError("outcome transition does not match the active attempt")
+    if last_run.outcome_path is None:
+        raise ValueError("outcome transition does not have an outcome path")
+    write_outcome(
+        Path(last_run.outcome_path),
+        OutcomeRecord(
+            attempt_id=attempt.id,
+            plan=attempt.snapshot,
+            phase=attempt.phase,
+            status=last_run.status,
+            summary=last_run.summary,
+            started_at=last_run.started_at,
+            finished_at=last_run.finished_at,
+            execution_workspace=last_run.execution_workspace,
+            artifacts=OutcomeArtifacts(
+                prompt_path=last_run.prompt_path,
+                transcript_path=last_run.transcript_path,
+            ),
         ),
     )
 

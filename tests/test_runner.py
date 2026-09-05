@@ -20,6 +20,7 @@ from uuid import UUID
 import pytest
 
 from ai_session_handler.config import default_state_path
+from ai_session_handler.outcomes import read_outcome
 from ai_session_handler.phases import PlanParseError, read_plan_snapshot
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
@@ -71,6 +72,11 @@ def test_run_records_stdout_complete_marker(tmp_path: Path) -> None:
     assert state.last_run is not None
     assert state.last_run.summary == "Implemented phase one."
     assert Path(state.last_run.transcript_path).exists()
+    assert state.last_run.outcome_path is not None
+    assert read_outcome(Path(state.last_run.outcome_path)).summary == "Implemented phase one."
+    assert tuple(reference.path for reference in state.committed_outcomes) == (
+        state.last_run.outcome_path,
+    )
 
 
 def test_run_ids_are_unique_for_attempts_in_the_same_second(tmp_path: Path) -> None:
@@ -175,8 +181,19 @@ def test_outcome_write_failure_preserves_durable_running_attempt(
     assert durable.active_attempt.status is ActiveAttemptStatus.RUNNING
     assert durable.stop is None
     assert durable.completed_phase_ids == ()
+    uncommitted_outcomes = list((options.state_path.parent / "outcomes").glob("*.json"))
+    assert len(uncommitted_outcomes) == 1
+    assert durable.committed_outcomes == ()
     with pytest.raises(ActiveAttemptError):
         run_phases(options)
+
+    retry = run_phases(replace(options, retry_stopped=True))
+
+    recovered = read_state(options.state_path)
+    assert retry.exit_code == EXIT_OK
+    assert len(recovered.committed_outcomes) == 1
+    assert recovered.committed_outcomes[0].path != str(uncommitted_outcomes[0])
+    assert read_outcome(uncommitted_outcomes[0]).status is AttemptStatus.PHASE_COMPLETE
 
 
 def test_run_records_stderr_blocked_marker(tmp_path: Path) -> None:
@@ -915,6 +932,82 @@ def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
     assert outcome.exit_code == EXIT_OK
     assert state.completed_phase_ids == ("phase-1", "phase-2")
     assert record_path.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_fresh_sessions_receive_global_intent_and_durable_handoffs(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    initial_preamble = "# Service plan\n\nGlobal constraint: preserve wire names.\n\n"
+    phases = (
+        "## Phase 1: Choose representation\n### Workspace\n\n.\n\n### Goal\n\nChoose.\n"
+        "## Phase 2: Apply representation\n### Workspace\n\n.\n\n### Goal\n\nApply.\n"
+        "## Phase 3: Verify handoff\n### Workspace\n\n.\n\n### Goal\n\nVerify.\n"
+    )
+    plan_path.write_text(initial_preamble + phases, encoding="utf-8")
+    attempts_path = tmp_path / "phase-2-attempts.txt"
+    script = _write_agent(
+        tmp_path,
+        "handoff-agent.py",
+        "from pathlib import Path\n"
+        "import sys\n"
+        "prompt = sys.stdin.read()\n"
+        "attempts = Path(sys.argv[1])\n"
+        "assert 'Global constraint: preserve wire names.' in prompt\n"
+        "if 'selected_phase_id: phase-1' in prompt:\n"
+        "    print('<phase-complete>Changed docs/decision.md. Validation: pytest passed. '"
+        "'Decision: use strings. Limitations: none. Handoff: docs/decision.md.</phase-complete>')\n"
+        "elif 'selected_phase_id: phase-2' in prompt:\n"
+        "    indexed = [Path(line.rsplit(' | ', 1)[-1]) for line in prompt.splitlines() "
+        "if ' | ' in line and line.endswith('.json')]\n"
+        "    assert ('Decision: use strings.' in prompt or any('Decision: use strings.' in "
+        "path.read_text(encoding='utf-8') for path in indexed))\n"
+        "    count = int(attempts.read_text() or '0') if attempts.exists() else 0\n"
+        "    attempts.write_text(str(count + 1), encoding='utf-8')\n"
+        "    if count == 0:\n"
+        "        print('<phase-needs-clarification>Name the chosen "
+        "field?</phase-needs-clarification>')\n"
+        "    else:\n"
+        "        assert 'Clarification: field is result_kind.' in prompt\n"
+        "        print('<phase-complete>Changed src/model.py. Validation: pytest passed. '"
+        "'Decision: result_kind. Limitations: none. Handoff: docs/decision.md.</phase-complete>')\n"
+        "else:\n"
+        "    assert 'status: phase-complete' in prompt\n"
+        "    assert 'Decision: result_kind.' in prompt\n"
+        "    assert 'phase-1 | phase-complete |' in prompt\n"
+        "    assert 'phase-2 | needs-clarification |' in prompt\n"
+        "    assert '/outcomes/' in prompt\n"
+        "    print('<phase-complete>Verified handoffs. Validation: pytest passed. '"
+        "'Limitations: none.</phase-complete>')\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    options = replace(
+        options,
+        agent_cmd=(
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+            f"{shlex.quote(str(attempts_path))}"
+        ),
+    )
+
+    clarification = run_phases(options)
+
+    assert clarification.exit_code == EXIT_NEEDS_CLARIFICATION
+    clarified_preamble = initial_preamble + "Clarification: field is result_kind.\n\n"
+    plan_path.write_text(clarified_preamble + phases, encoding="utf-8")
+
+    completed = run_phases(replace(options, retry_stopped=True, accept_plan_change=True))
+
+    assert completed.exit_code == EXIT_OK
+    state = read_state(options.state_path)
+    assert state.completed_phase_ids == ("phase-1", "phase-2", "phase-3")
+    assert [outcome.status for outcome in state.committed_outcomes] == [
+        AttemptStatus.PHASE_COMPLETE,
+        AttemptStatus.NEEDS_CLARIFICATION,
+        AttemptStatus.PHASE_COMPLETE,
+        AttemptStatus.PHASE_COMPLETE,
+    ]
+    for reference in state.committed_outcomes:
+        assert read_outcome(Path(reference.path)).attempt_id == reference.attempt_id
 
 
 def test_plan_edit_after_phase_stops_before_next_worker(tmp_path: Path) -> None:

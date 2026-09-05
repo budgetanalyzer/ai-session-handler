@@ -239,6 +239,7 @@ def _status_command(args: argparse.Namespace) -> int:
         print(f"attempt started: {attempt.started_at}")
         print(f"attempt prompt: {attempt.prompt_path}")
         print(f"attempt transcript: {attempt.transcript_path}")
+        print(f"attempt outcome (uncommitted): {attempt.outcome_path}")
         if attempt.process is None:
             print("worker process identity: unknown")
         else:
@@ -270,6 +271,10 @@ def _status_command(args: argparse.Namespace) -> int:
         print(f"latest transcript: {state.last_run.transcript_path}")
     else:
         print("latest transcript: none")
+    if state.last_run is not None and state.last_run.outcome_path is not None:
+        print(f"latest committed outcome: {state.last_run.outcome_path}")
+    else:
+        print("latest committed outcome: none")
     if plan_error is not None:
         _print_status_plan_error(plan_error)
         return EXIT_INVALID
@@ -328,6 +333,8 @@ def _print_stopped_state_error(
 
     print(f"last run: {state.last_run.run_id} ({state.last_run.status})", file=sys.stderr)
     print(f"transcript: {state.last_run.transcript_path}", file=sys.stderr)
+    if state.last_run.outcome_path is not None:
+        print(f"outcome: {state.last_run.outcome_path}", file=sys.stderr)
     _print_transcript_tail(Path(state.last_run.transcript_path), sys.stderr)
 
 
@@ -339,6 +346,7 @@ def _print_active_attempt_error(attempt: ActiveAttempt) -> None:
     print(f"execution workspace path: {attempt.execution_workspace}", file=sys.stderr)
     print(f"prompt: {attempt.prompt_path}", file=sys.stderr)
     print(f"transcript: {attempt.transcript_path}", file=sys.stderr)
+    print(f"planned outcome (uncommitted): {attempt.outcome_path}", file=sys.stderr)
     if attempt.process is None:
         print("worker process identity: unknown", file=sys.stderr)
     else:
@@ -353,6 +361,8 @@ def _print_run_outcome(outcome: RunnerOutcome) -> None:
 
     print(outcome.message, file=sys.stderr)
     if outcome.state.last_run is not None:
+        if outcome.state.last_run.outcome_path is not None:
+            print(f"outcome: {outcome.state.last_run.outcome_path}", file=sys.stderr)
         print(f"transcript: {outcome.state.last_run.transcript_path}", file=sys.stderr)
         _print_transcript_tail(Path(outcome.state.last_run.transcript_path), sys.stderr)
     elif outcome.state.active_attempt is not None:

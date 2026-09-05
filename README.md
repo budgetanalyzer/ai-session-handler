@@ -104,9 +104,10 @@ completion.
 
 Provider-specific setup belongs in wrapper scripts, not in runner internals.
 
-Each attempt gets a timestamped, UUID-backed id. Its prompt and transcript are
-written under the owning plan directory at `prompts/<attempt-id>.txt` and
-`transcripts/<attempt-id>.txt`; existing attempt artifacts are never overwritten.
+Each attempt gets a timestamped, UUID-backed id. Its prompt, transcript, and terminal outcome are
+written under the owning plan directory in `prompts/<attempt-id>.txt`,
+`transcripts/<attempt-id>.txt`, and `outcomes/<attempt-id>.json`; existing attempt artifacts are
+never overwritten.
 The prompt is also piped to the agent process over stdin. The state path included
 in the worker prompt is read-only context: workers must not modify it and must
 report their outcome through exactly one terminal result block. The block must begin at a line
@@ -114,6 +115,18 @@ boundary, contain a nonempty result, and end as the final non-whitespace content
 or stderr. Recognized tags in examples or diagnostics, malformed framing, extra blocks, or results
 on both streams fail closed. See [Worker result protocol](docs/worker-protocol.md) for the complete
 contract. The runner owns all durable state transitions derived from the result.
+
+Every fresh worker receives the accepted plan's global preamble and exact selected phase body. It
+also receives the latest relevant summary plus a compact, status-labeled index of earlier committed
+outcome paths, so prior decisions and verification evidence remain discoverable without replaying
+all transcripts. Terminal summaries are expected to name changed artifacts, validation commands
+and results, decisions, limitations, and durable handoff references. Outcome bodies remain plain
+text; the runner does not parse summary headings or generate compaction.
+
+The runner writes and flushes each outcome JSON before atomically linking it from state. Only those
+links make an outcome authoritative. A record left unreferenced by a crash or failed state write is
+not later adopted as proof of success; the active attempt remains unresolved and requires the same
+inspection and explicit retry flow.
 
 Before launch, state records a prepared active attempt; after launch it records a running attempt
 and a reuse-resistant Linux process identity when available. If the handler disappears before a
@@ -140,6 +153,8 @@ The generated layout is:
         ├── state.json
         ├── prompts/
         │   └── <attempt-id>.txt
+        ├── outcomes/
+        │   └── <attempt-id>.json
         └── transcripts/
             └── <attempt-id>.txt
 ```
@@ -233,7 +248,7 @@ Run without echoing agent progress while retaining the durable transcript:
   --quiet
 ```
 
-Print durable state and the latest transcript path:
+Print durable state and the latest transcript and committed outcome paths:
 
 ```bash
 .venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
@@ -244,7 +259,8 @@ selected execution workspace.
 
 If a phase stops or has an unresolved active attempt, a later run refuses to continue by default
 and prints the available recovery details. After inspecting the workspace and artifacts, answering
-any clarification, and stopping any surviving worker, rerun that phase explicitly:
+any clarification in durable plan or repository context, and stopping any surviving worker, rerun
+that phase explicitly:
 
 ```bash
 .venv/bin/ai-session-handler run \
@@ -262,6 +278,19 @@ accepted and completed phase ids are verified to still exist:
   --agent-cmd "your-agent-command" \
   --accept-plan-change
 ```
+
+When clarification both stopped the phase and changed the plan, combine the two explicit actions:
+
+```bash
+.venv/bin/ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "your-agent-command" \
+  --retry-stopped \
+  --accept-plan-change
+```
+
+Do not place clarification in runner-owned state or outcome JSON. Put execution-wide intent in the
+plan preamble and longer-lived design decisions in ordinary repository documentation.
 
 Plan acceptance is snapshot-based. At invocation initialization, the runner hashes and parses one
 read of the exact UTF-8 source bytes; CRLF line endings are preserved and included in the hash. It

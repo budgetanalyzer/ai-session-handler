@@ -29,12 +29,18 @@ class PromptContext:
     state: RunnerState
     run_id: str
     transcript_path: Path
+    plan_preamble: str
 
 
 def render_worker_prompt(context: PromptContext) -> str:
     """Render the protocol prompt for one selected phase."""
+    global_intent_section = _delimited_section(
+        "GLOBAL PLAN INTENT",
+        context.plan_preamble,
+    )
     phase_body_section = _selected_phase_body_section(context.phase.body)
     state_summary = summarize_previous_state(context.state)
+    handoff_context = summarize_handoff_context(context.state)
 
     return (
         "AI SESSION HANDLER WORKER PROTOCOL\n"
@@ -53,15 +59,22 @@ def render_worker_prompt(context: PromptContext) -> str:
         "- Read repository instructions first from execution_workspace_path, beginning with "
         "the AGENTS.md at its root.\n"
         "- Inspect current repository state before editing.\n"
+        "- Read the global plan intent, durable handoff context, and any prior outcome records "
+        "relevant to this phase before making decisions.\n"
         f"- Implement exactly selected phase {context.phase.id}: {context.phase.title}.\n"
         "- Do not proceed to later phases.\n"
+        "- Restrict execution work to execution_workspace_path and the selected phase. Do not "
+        "perform work in another repository.\n"
         "- Follow the selected phase plan unless repository reality contradicts it.\n"
         "- Run the validation commands listed in the selected phase.\n"
         "- Do not run git commit, push, checkout, reset, clean, stash, branch creation, "
         "or automatic worktree operations.\n"
         "- Update only files required for the selected phase.\n"
-        "- Treat state_path as runner-owned and read-only. Do not create, edit, replace, or "
-        "delete the state file; report the phase outcome only through the terminal marker.\n"
+        "- Treat state_path and outcome records as runner-owned and read-only. Do not create, "
+        "edit, replace, or delete them; report the phase outcome only through the terminal "
+        "marker.\n"
+        "- Store durable design context in ordinary repository documentation when this phase "
+        "requires later phases to rely on it.\n"
         "- Do not make design-changing guesses. If implementation requires an unplanned "
         "product, architecture, schema, API, or workflow decision, stop with "
         "<phase-needs-clarification>.\n"
@@ -77,10 +90,19 @@ def render_worker_prompt(context: PromptContext) -> str:
         "- Use <phase-needs-clarification> when a specific user decision is required.\n"
         "- Use <phase-complete> only after implementation and validation for this phase are "
         "complete.\n"
+        "- In every terminal result, summarize changed artifacts, validation commands and "
+        "results, decisions, remaining limitations, and relevant handoff references. Keep the "
+        "summary concise but sufficient for a fresh worker.\n"
+        "\n"
+        f"{global_intent_section}\n"
         "\n"
         "PREVIOUS STATE SUMMARY START\n"
         f"{state_summary}\n"
         "PREVIOUS STATE SUMMARY END\n"
+        "\n"
+        "DURABLE HANDOFF CONTEXT START\n"
+        f"{handoff_context}\n"
+        "DURABLE HANDOFF CONTEXT END\n"
         "\n"
         f"{phase_body_section}\n"
         "\n"
@@ -117,6 +139,7 @@ def summarize_previous_state(state: RunnerState) -> str:
 
     completed = ", ".join(state.completed_phase_ids) if state.completed_phase_ids else "none"
     lines.append(f"completed_phase_ids: {completed}")
+    lines.append(f"committed_outcome_count: {len(state.committed_outcomes)}")
 
     if state.current_phase is None:
         lines.append("current_phase: none")
@@ -157,6 +180,7 @@ def summarize_previous_state(state: RunnerState) -> str:
                 f"  started_at: {attempt.started_at}",
                 f"  prompt_path: {attempt.prompt_path}",
                 f"  transcript_path: {attempt.transcript_path}",
+                f"  outcome_path: {attempt.outcome_path}",
             ]
         )
 
@@ -175,6 +199,7 @@ def summarize_previous_state(state: RunnerState) -> str:
                 f"  execution_workspace: {state.last_run.execution_workspace}",
                 f"  prompt_path: {state.last_run.prompt_path}",
                 f"  transcript_path: {state.last_run.transcript_path}",
+                f"  outcome_path: {_optional_text(state.last_run.outcome_path)}",
                 f"  summary: {state.last_run.summary}",
             ]
         )
@@ -182,9 +207,51 @@ def summarize_previous_state(state: RunnerState) -> str:
     return "\n".join(lines)
 
 
+def summarize_handoff_context(state: RunnerState) -> str:
+    """Render the latest summary and a compact index of earlier committed outcomes."""
+    lines: list[str] = []
+    latest_path: str | None = None
+    if state.last_run is None:
+        lines.append("latest_relevant_summary: none")
+    else:
+        latest = state.last_run
+        latest_path = latest.outcome_path
+        lines.extend(
+            [
+                "latest_relevant_summary:",
+                f"  attempt_id: {latest.run_id}",
+                f"  phase_id: {latest.phase_id}",
+                f"  status: {latest.status.value}",
+                f"  outcome_path: {_optional_text(latest.outcome_path)}",
+                "  summary:",
+                _indent_text(latest.summary, spaces=4),
+            ]
+        )
+
+    earlier = [outcome for outcome in state.committed_outcomes if outcome.path != latest_path]
+    if not earlier:
+        lines.append("earlier_committed_outcomes: none")
+    else:
+        lines.append("earlier_committed_outcomes:")
+        lines.extend(
+            f"  - {outcome.phase_id} | {outcome.status.value} | {outcome.path}"
+            for outcome in earlier
+        )
+    return "\n".join(lines)
+
+
 def _selected_phase_body_section(body: str) -> str:
-    trailing_newline = "" if body.endswith("\n") else "\n"
-    return f"SELECTED PHASE BODY START\n{body}{trailing_newline}SELECTED PHASE BODY END"
+    return _delimited_section("SELECTED PHASE BODY", body)
+
+
+def _delimited_section(label: str, text: str) -> str:
+    trailing_newline = "" if text.endswith("\n") else "\n"
+    return f"{label} START\n{text}{trailing_newline}{label} END"
+
+
+def _indent_text(text: str, *, spaces: int) -> str:
+    prefix = " " * spaces
+    return "\n".join(f"{prefix}{line}" for line in text.splitlines())
 
 
 def _optional_text(value: str | None) -> str:

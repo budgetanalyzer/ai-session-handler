@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from ai_session_handler.artifacts import ArtifactExistsError
 from ai_session_handler.config import ConfigError, default_state_path, plan_key
+from ai_session_handler.outcomes import (
+    OutcomeArtifacts,
+    OutcomeRecord,
+    read_outcome,
+    write_outcome,
+)
 from ai_session_handler.phases import Phase, parse_phases, read_plan_snapshot
 from ai_session_handler.state import (
     AcceptedPlanChangeError,
@@ -18,6 +25,7 @@ from ai_session_handler.state import (
     ActiveAttemptStatus,
     AttemptStatus,
     LastRun,
+    OutcomeRef,
     PhaseRef,
     PlanHashMismatchError,
     PlanPathMismatchError,
@@ -54,6 +62,7 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
     run_id = "20260705T120102Z-phase-2"
     prompt_path = state_path.parent / "prompts" / f"{run_id}.txt"
     transcript_path = state_path.parent / "transcripts" / f"{run_id}.txt"
+    outcome_path = state_path.parent / "outcomes" / f"{run_id}.json"
     state = RunnerState(
         plan=PlanRecord(
             path=str(tmp_path / "docs/plans/example.md"),
@@ -61,6 +70,14 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
             accepted_at="2026-07-05T12:01:02Z",
         ),
         completed_phase_ids=("phase-1",),
+        committed_outcomes=(
+            OutcomeRef(
+                attempt_id=run_id,
+                phase_id="phase-2",
+                status=AttemptStatus.NEEDS_CLARIFICATION,
+                path=str(outcome_path),
+            ),
+        ),
         current_phase=PhaseRef(id="phase-2", title="State Store"),
         stop=StopState(
             reason=StopReason.NEEDS_CLARIFICATION,
@@ -77,6 +94,7 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
             execution_workspace=str(tmp_path),
             prompt_path=str(prompt_path),
             transcript_path=str(transcript_path),
+            outcome_path=str(outcome_path),
             summary="Asked for clarification.",
         ),
     )
@@ -105,6 +123,7 @@ def test_active_attempt_round_trips_with_process_identity(tmp_path: Path) -> Non
         started_at="2026-07-05T12:01:02Z",
         prompt_path=str(state_path.parent / "prompts" / f"{run_id}.txt"),
         transcript_path=str(state_path.parent / "transcripts" / f"{run_id}.txt"),
+        outcome_path=str(state_path.parent / "outcomes" / f"{run_id}.json"),
         process=ProcessIdentity(
             pid=123,
             process_group_id=123,
@@ -147,6 +166,7 @@ def test_active_attempt_snapshot_must_match_accepted_plan(tmp_path: Path) -> Non
             started_at="2026-07-05T12:01:02Z",
             prompt_path=str(state_path.parent / "prompts" / f"{run_id}.txt"),
             transcript_path=str(state_path.parent / "transcripts" / f"{run_id}.txt"),
+            outcome_path=str(state_path.parent / "outcomes" / f"{run_id}.json"),
         ),
     )
 
@@ -173,7 +193,8 @@ def test_state_requires_explicit_active_attempt_key(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
         '{"plan": null, "completed_phase_ids": [], '
-        '"current_phase": null, "stop": null, "last_run": null}\n',
+        '"committed_outcomes": [], "current_phase": null, "stop": null, '
+        '"last_run": null}\n',
         encoding="utf-8",
     )
 
@@ -329,6 +350,7 @@ def test_retry_stopped_is_required_for_active_attempt(tmp_path: Path) -> None:
             started_at="2026-07-05T12:01:02Z",
             prompt_path=str(tmp_path / "prompts" / f"{run_id}.txt"),
             transcript_path=str(tmp_path / "transcripts" / f"{run_id}.txt"),
+            outcome_path=str(tmp_path / "outcomes" / f"{run_id}.json"),
         ),
     )
 
@@ -396,6 +418,34 @@ def test_with_current_phase_updates_phase_reference() -> None:
 
     assert state.current_phase == PhaseRef(id="phase-1", title="One")
     assert with_current_phase(state, None).current_phase is None
+
+
+def test_outcome_record_round_trips_without_schema_version(tmp_path: Path) -> None:
+    run_id = "attempt-1"
+    path = tmp_path / "outcomes" / f"{run_id}.json"
+    record = OutcomeRecord(
+        attempt_id=run_id,
+        plan=SnapshotIdentity(path=str(tmp_path / "plan.md"), sha256="a" * 64),
+        phase=PhaseRef(id="phase-1", title="One"),
+        status=AttemptStatus.PHASE_COMPLETE,
+        summary="Changed src/example.py; pytest passed.",
+        started_at="2026-07-05T12:01:02Z",
+        finished_at="2026-07-05T12:02:03Z",
+        execution_workspace=str(tmp_path),
+        artifacts=OutcomeArtifacts(
+            prompt_path=str(tmp_path / "prompts" / f"{run_id}.txt"),
+            transcript_path=str(tmp_path / "transcripts" / f"{run_id}.txt"),
+        ),
+    )
+
+    write_outcome(path, record)
+
+    assert read_outcome(path) == record
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert "schema_version" not in raw
+
+    with pytest.raises(ArtifactExistsError, match="refusing to overwrite"):
+        write_outcome(path, record)
 
 
 def _write_plan(tmp_path: Path, text: str) -> Path:

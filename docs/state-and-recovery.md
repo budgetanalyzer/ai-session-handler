@@ -11,6 +11,8 @@ path a separate history directory:
         ├── state.json
         ├── prompts/
         │   └── <attempt-id>.txt
+        ├── outcomes/
+        │   └── <attempt-id>.json
         └── transcripts/
             └── <attempt-id>.txt
 ```
@@ -21,8 +23,8 @@ different paths have independent history, while an edit at one path is detected 
 change. Path aliases that resolve to the same canonical file use the same key.
 
 Attempt ids retain a UTC timestamp and phase id for operators and include a UUID for uniqueness.
-Prompt and transcript files are created exclusively. If an artifact with the selected attempt id
-already exists, the runner stops instead of truncating or replacing it.
+Prompt, transcript, and outcome files are created exclusively. If an artifact with the selected
+attempt id already exists, the runner stops instead of truncating or replacing it.
 
 ## Attempt Lifecycle
 
@@ -30,21 +32,37 @@ Current state distinguishes work that has never started from an attempt whose te
 not durably recorded. Before creating attempt artifacts or launching a worker, the runner
 atomically records `active_attempt` with status `prepared`. That record contains the attempt and
 phase ids, the accepted plan path and SHA-256 snapshot, execution workspace, start time, and
-absolute prompt and transcript paths. Immediately after launch it replaces that record with status
-`running` and, when Linux process metadata is readable, records the PID, process-group id, boot id,
-and process start time. The boot id and start time prevent a later retry from treating an unrelated
-process that reused the numeric PID as the old worker.
+absolute prompt, transcript, and planned outcome paths. Immediately after launch it replaces that
+record with status `running` and, when Linux process metadata is readable, records the PID,
+process-group id, boot id, and process start time. The boot id and start time prevent a later retry
+from treating an unrelated process that reused the numeric PID as the old worker.
 
-A terminal transition atomically clears `active_attempt` and records `last_run`. Completion also
-adds the phase id to `completed_phase_ids` and clears `current_phase`. Blocked, clarification, agent
-failure, missing, multiple, or invalid marker failure, timeout, stop-regex, launch failure,
-interruption, and execution IO
-outcomes retain `current_phase` and create a typed `stop`. Clarification text remains in
+A terminal transition first writes and flushes a runner-owned JSON outcome record, then atomically
+clears `active_attempt`, appends a typed reference to `committed_outcomes`, and records `last_run`.
+The unversioned outcome object contains attempt, accepted plan snapshot, and phase identity; terminal
+status and plain-text summary; start and finish timestamps; execution workspace; and prompt and
+transcript paths. Completion also adds the phase id to `completed_phase_ids` and clears
+`current_phase`. Blocked, clarification, agent failure, missing, multiple, or invalid marker
+failure, timeout, stop-regex, launch failure, interruption, and execution IO outcomes retain
+`current_phase` and create a typed `stop`. Clarification text remains in
 `stop.clarification_request`; other diagnostic text remains in `stop.message`. A launch failure
 after the prepared record exists and any attempt IO failure return exit code 4. A catchable SIGINT
 or SIGTERM records the interrupted outcome before the handler exits in response to that signal.
 Invalid plans, configuration, command templates, workspaces, or persisted state rejected before
 preparation return exit code 5.
+
+Only outcome paths referenced by `committed_outcomes` are authoritative history. If the handler
+writes an outcome but crashes or cannot replace state, that record remains useful execution
+evidence but is uncommitted and is never adopted later as proof of success. The durable
+`active_attempt` still requires inspection and explicit retry. Recovery resolves that attempt as
+an unknown interruption; a later successful attempt receives its own id and outcome record.
+
+Fresh worker prompts include the accepted plan's exact global preamble, the exact selected phase
+body, the latest relevant terminal summary, and a compact index of earlier committed outcome paths.
+The index labels phase and status so failed attempts are not presented as completed prerequisites.
+Workers read relevant indexed records when earlier decisions or validation evidence matter; full
+transcripts remain available but are not replayed into every prompt. Durable design decisions that
+later phases depend on belong in ordinary repository documentation, not only in generated history.
 
 Terminal results are validated independently on stdout and stderr using the framing contract in
 [Worker result protocol](worker-protocol.md). The runner records `invalid-marker` for recognized but
@@ -70,10 +88,11 @@ record has unknown process identity. Treat it as potentially live and perform ma
 inspection; the runner will neither guess liveness nor kill a numeric PID for it.
 
 State replacement can itself fail. If an ordinary terminal result or handled launch/IO failure
-cannot replace `state.json`, the last durable prepared/running attempt is retained and the
-invocation returns exit code 4. If interruption recording fails, the signal-driven exit continues
-and the active attempt remains unresolved. Both cases deliberately lose a known-but-not-durable
-result rather than erasing the evidence that execution occurred.
+cannot replace `state.json`, the last durable prepared/running attempt is retained and any already
+written outcome stays uncommitted. The invocation returns exit code 4. If interruption recording
+fails, the signal-driven exit continues and the active attempt remains unresolved. Both cases
+deliberately lose a known-but-not-durable result rather than erasing the evidence that execution
+occurred.
 
 ## Exclusive Execution Ownership
 
@@ -134,6 +153,15 @@ interpreted, moved, rewritten, or deleted.
 Existing generated files remain user-owned execution evidence. They may be retained or archived
 manually, but they are not inputs to the current release unless they were created by that release
 at the current keyed paths.
+
+## Clarification and Durable Context
+
+When a worker requests clarification, record the answer in durable plan or repository context. If
+the answer changes the plan bytes, inspect the change and run the stopped phase with both
+`--retry-stopped` and `--accept-plan-change`; the runner checks that every completed phase id still
+exists before accepting the new snapshot. Use a plan preamble edit for execution-wide intent and
+ordinary repository documentation for design context that should outlive generated runner history.
+Do not edit `state.json` or outcome records to supply an answer.
 
 ## Renamed or Relocated Plans
 

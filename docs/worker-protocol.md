@@ -31,6 +31,26 @@ These outcomes are worker assertions. `phase-complete` advances execution histor
 independent verification or user approval. The user remains responsible for reviewing the changes
 and validation evidence and for final semantic acceptance.
 
+## Fresh-Session Context and Handoffs
+
+Every worker prompt contains clearly delimited copies of the accepted plan's global preamble and
+the selected phase body. Workers must read both, follow referenced context, and perform execution
+work only for the selected phase in its declared execution workspace. The prompt also carries the
+latest relevant terminal summary and a compact phase/status/path index of earlier runner-committed
+outcomes. Workers should open indexed JSON records when earlier decisions or verification evidence
+is relevant; complete transcripts are retained separately rather than copied into each session.
+
+Every terminal result body remains plain text, with no runner-parsed internal heading grammar. It
+should concisely identify changed artifacts, validation commands and results, decisions, remaining
+limitations, and relevant handoff references. When a decision must remain available beyond the
+generated execution history, the worker records it in ordinary repository documentation as part of
+the selected phase.
+
+State and outcome files are runner-owned. Workers may read committed outcomes referenced by the
+prompt, but must not create, edit, replace, or delete state or outcome records. The runner writes an
+outcome record before committing its reference to state; an unreferenced record left by an
+interruption is evidence only and never establishes completion.
+
 ## Provider Wrapper Obligations
 
 Core execution remains provider-agnostic. A wrapper that translates provider-specific output must:

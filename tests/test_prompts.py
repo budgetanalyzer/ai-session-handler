@@ -9,7 +9,14 @@ import pytest
 from ai_session_handler.artifacts import ArtifactExistsError
 from ai_session_handler.phases import Phase
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
-from ai_session_handler.state import AttemptStatus, LastRun, PhaseRef, PlanRecord, RunnerState
+from ai_session_handler.state import (
+    AttemptStatus,
+    LastRun,
+    OutcomeRef,
+    PhaseRef,
+    PlanRecord,
+    RunnerState,
+)
 
 
 def test_render_worker_prompt_matches_fixture() -> None:
@@ -41,8 +48,20 @@ def test_render_worker_prompt_handles_body_without_trailing_newline() -> None:
 def test_render_worker_prompt_marks_state_as_runner_owned_and_read_only() -> None:
     prompt = render_worker_prompt(_prompt_context())
 
-    assert "Treat state_path as runner-owned and read-only" in prompt
+    assert "Treat state_path and outcome records as runner-owned and read-only" in prompt
     assert "report the phase outcome only through the terminal marker" in prompt
+
+
+def test_render_worker_prompt_includes_global_intent_and_handoff_requirements() -> None:
+    prompt = render_worker_prompt(_prompt_context())
+
+    assert "GLOBAL PLAN INTENT START\n# Example plan\n\nKeep API names stable.\n" in prompt
+    assert "GLOBAL PLAN INTENT END" in prompt
+    assert "changed artifacts, validation commands and results, decisions" in prompt
+    assert "remaining limitations, and relevant handoff references" in prompt
+    assert "phase-1 | phase-complete" not in prompt
+    assert "status: phase-complete" in prompt
+    assert "Completed parser." in prompt
 
 
 def test_render_worker_prompt_requires_strict_terminal_marker_framing() -> None:
@@ -94,6 +113,17 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
             accepted_at="2026-07-05T12:00:00Z",
         ),
         completed_phase_ids=("phase-1",),
+        committed_outcomes=(
+            OutcomeRef(
+                attempt_id="20260705T115000Z-phase-1",
+                phase_id="phase-1",
+                status=AttemptStatus.PHASE_COMPLETE,
+                path=(
+                    "/plan-repo/.ai-session-handler/plans/plan-key/outcomes/"
+                    "20260705T115000Z-phase-1.json"
+                ),
+            ),
+        ),
         current_phase=PhaseRef(id="phase-2", title="Prompt Builder"),
         last_run=LastRun(
             run_id="20260705T115000Z-phase-1",
@@ -107,7 +137,12 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
                 "/plan-repo/.ai-session-handler/plans/plan-key/prompts/20260705T115000Z-phase-1.txt"
             ),
             transcript_path=(
-                ".ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt"
+                "/plan-repo/.ai-session-handler/plans/plan-key/transcripts/"
+                "20260705T115000Z-phase-1.txt"
+            ),
+            outcome_path=(
+                "/plan-repo/.ai-session-handler/plans/plan-key/outcomes/"
+                "20260705T115000Z-phase-1.json"
             ),
             summary="Completed parser.",
         ),
@@ -123,4 +158,5 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
         transcript_path=Path(
             "/plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T120102Z-phase-2.txt"
         ),
+        plan_preamble="# Example plan\n\nKeep API names stable.\n",
     )
