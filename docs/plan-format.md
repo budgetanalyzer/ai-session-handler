@@ -161,10 +161,11 @@ caller's current directory. The resolved path must be an existing directory with
 that exact root. This ensures the fresh worker's first repository instructions belong to the
 repository where the phase executes.
 
-The plan repository and execution workspace have separate roles. The plan repository owns
-`.ai-session-handler/config.json`, state, generated prompts, and transcripts for the whole plan.
-The selected phase workspace is only the child process working directory and the value of the
-`{workspace}` command placeholder.
+The plan repository and execution workspace have separate roles. The plan repository owns the
+shared `.ai-session-handler/config.json`. State and attempt artifacts for each canonical plan path
+live below `.ai-session-handler/plans/<plan-key>/`; the key is derived from the canonical
+workspace-relative path, not the plan content. The selected phase workspace is only the child
+process working directory and the value of the `{workspace}` command placeholder.
 
 ## Other Headings
 

@@ -14,6 +14,7 @@ from ai_session_handler.config import (
     ConfigError,
     default_config_path,
     default_state_path,
+    ensure_no_legacy_state,
     read_config,
     write_example_config,
 )
@@ -128,6 +129,7 @@ def _run_command(args: argparse.Namespace) -> int:
     config_path = default_config_path(plan_workspace_path)
 
     try:
+        ensure_no_legacy_state(plan_workspace_path, plan_path)
         config = read_config(config_path)
         agent_cmd = args.agent_cmd or config.agent_cmd
         if agent_cmd is None:
@@ -181,6 +183,7 @@ def _status_command(args: argparse.Namespace) -> int:
     state_path = default_state_path(plan_workspace_path, plan_path)
 
     try:
+        ensure_no_legacy_state(plan_workspace_path, plan_path)
         snapshot = read_plan_snapshot(plan_path)
         phases = snapshot.phases
         state = read_state(state_path)
@@ -188,7 +191,7 @@ def _status_command(args: argparse.Namespace) -> int:
     except PlanHashMismatchError as error:
         _print_plan_hash_mismatch(error)
         return EXIT_INVALID
-    except (OSError, PlanParseError, StateError) as error:
+    except (ConfigError, OSError, PlanParseError, StateError) as error:
         _print_error(str(error))
         return EXIT_INVALID
 
@@ -225,6 +228,7 @@ def _status_command(args: argparse.Namespace) -> int:
             print(f"next phase: {selected_phase.id} {selected_phase.title}")
 
     print(f"plan workspace path: {plan_workspace_path}")
+    print(f"state path: {state_path}")
     if selected_phase is None:
         print("execution workspace path: none")
     else:
@@ -246,6 +250,7 @@ def _init_command(args: argparse.Namespace) -> int:
         _print_error(str(error))
         return EXIT_INVALID
     print(f"created {config_path}")
+    print(f"created {config_path.parent / 'plans'}")
     return 0
 
 

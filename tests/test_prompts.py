@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from ai_session_handler.artifacts import ArtifactExistsError
 from ai_session_handler.phases import Phase
 from ai_session_handler.prompts import PromptContext, render_worker_prompt, write_worker_prompt
 from ai_session_handler.state import LastRun, PhaseRef, PlanRecord, RunnerState
@@ -44,12 +47,24 @@ def test_render_worker_prompt_marks_state_as_runner_owned_and_read_only() -> Non
 
 def test_write_worker_prompt_writes_run_prompt_file(tmp_path: Path) -> None:
     context = _prompt_context()
-    generated_dir = tmp_path / ".ai-session-handler"
+    generated_dir = tmp_path / ".ai-session-handler" / "plans" / "plan-key"
 
     prompt_path = write_worker_prompt(generated_dir, context)
 
     assert prompt_path == generated_dir / "prompts" / "20260705T120102Z-phase-2.txt"
     assert prompt_path.read_text(encoding="utf-8") == render_worker_prompt(context)
+
+
+def test_write_worker_prompt_refuses_to_overwrite_existing_attempt(tmp_path: Path) -> None:
+    context = _prompt_context()
+    generated_dir = tmp_path / ".ai-session-handler" / "plans" / "plan-key"
+    prompt_path = write_worker_prompt(generated_dir, context)
+    original = prompt_path.read_bytes()
+
+    with pytest.raises(ArtifactExistsError, match="refusing to overwrite"):
+        write_worker_prompt(generated_dir, context)
+
+    assert prompt_path.read_bytes() == original
 
 
 def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
@@ -78,7 +93,9 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
             started_at="2026-07-05T11:50:00Z",
             finished_at="2026-07-05T11:55:00Z",
             exit_code=0,
-            transcript_path=".ai-session-handler/transcripts/20260705T115000Z-phase-1.txt",
+            transcript_path=(
+                ".ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt"
+            ),
             summary="Completed parser.",
         ),
     )
@@ -86,11 +103,11 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
         plan_workspace_path=Path("/plan-repo"),
         execution_workspace_path=Path("/service"),
         plan_path=Path("/plan-repo/docs/plans/example.md"),
-        state_path=Path("/plan-repo/.ai-session-handler/example.json"),
+        state_path=Path("/plan-repo/.ai-session-handler/plans/plan-key/state.json"),
         phase=selected_phase,
         state=state,
         run_id="20260705T120102Z-phase-2",
         transcript_path=Path(
-            "/plan-repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt"
+            "/plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T120102Z-phase-2.txt"
         ),
     )

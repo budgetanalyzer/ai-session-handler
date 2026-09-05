@@ -98,6 +98,18 @@ class PlanHashMismatchError(StateError):
         )
 
 
+class PlanPathMismatchError(StateError):
+    """Raised when state belongs to a different canonical plan path."""
+
+    def __init__(self, *, stored_path: str, actual_path: Path) -> None:
+        self.stored_path = stored_path
+        self.actual_path = actual_path
+        super().__init__(
+            f"{actual_path}: plan path mismatch; state belongs to {stored_path}. "
+            "A renamed or relocated plan requires an explicit history decision."
+        )
+
+
 class StoppedStateError(StateError):
     """Raised when a stopped state is selected without an explicit retry."""
 
@@ -215,6 +227,9 @@ def ensure_plan_hash_matches(
     """Return state with an accepted plan hash or raise on an unsafe mismatch."""
     if state.plan is None:
         return accept_plan(state, snapshot, accepted_at=accepted_at)
+
+    if state.plan.path != str(snapshot.path):
+        raise PlanPathMismatchError(stored_path=state.plan.path, actual_path=snapshot.path)
 
     if state.plan.sha256 == snapshot.sha256:
         return state

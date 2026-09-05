@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -23,14 +24,59 @@ class ConfigError(ValueError):
     """Raised when the optional config file is invalid."""
 
 
+class LegacyStateError(ConfigError):
+    """Raised when generated state still uses the legacy stem-based layout."""
+
+
 def default_config_path(workspace: Path) -> Path:
     """Return the default config path for a workspace."""
     return workspace / ".ai-session-handler" / "config.json"
 
 
+def plan_key(workspace: Path, plan_path: Path) -> str:
+    """Return the stable key for a canonical plan path within its workspace."""
+    canonical_workspace = workspace.resolve()
+    canonical_plan = plan_path.resolve()
+    try:
+        relative_plan = canonical_plan.relative_to(canonical_workspace)
+    except ValueError as error:
+        raise ConfigError(
+            f"{canonical_plan}: plan is outside workspace {canonical_workspace}"
+        ) from error
+    return sha256(relative_plan.as_posix().encode("utf-8")).hexdigest()
+
+
+def plan_generated_path(workspace: Path, plan_path: Path) -> Path:
+    """Return the generated directory owned by one plan path."""
+    return workspace / ".ai-session-handler" / "plans" / plan_key(workspace, plan_path)
+
+
 def default_state_path(workspace: Path, plan_path: Path) -> Path:
     """Return the default state path for a plan."""
+    return plan_generated_path(workspace, plan_path) / "state.json"
+
+
+def legacy_state_path(workspace: Path, plan_path: Path) -> Path:
+    """Return the state path used by the legacy stem-based layout."""
     return workspace / ".ai-session-handler" / f"{plan_path.stem}.json"
+
+
+def ensure_no_legacy_state(workspace: Path, plan_path: Path) -> None:
+    """Refuse to silently ignore state stored in the legacy layout."""
+    legacy_path = legacy_state_path(workspace, plan_path)
+    if not legacy_path.exists():
+        return
+
+    config_path = default_config_path(workspace)
+    if legacy_path == config_path and not _is_state_shaped_json(legacy_path):
+        return
+
+    new_path = default_state_path(workspace, plan_path)
+    raise LegacyStateError(
+        f"{legacy_path}: legacy plan state detected for {plan_path}; back up "
+        f".ai-session-handler and relocate this history to {new_path} after verifying "
+        "the stored plan path. See docs/state-and-recovery.md."
+    )
 
 
 def read_config(path: Path) -> HandlerConfig:
@@ -57,8 +103,7 @@ def read_config(path: Path) -> HandlerConfig:
 def write_example_config(path: Path) -> None:
     """Create an example config file and required generated directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    (path.parent / "prompts").mkdir(parents=True, exist_ok=True)
-    (path.parent / "transcripts").mkdir(parents=True, exist_ok=True)
+    (path.parent / "plans").mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise ConfigError(f"{path}: config already exists")
 
@@ -69,6 +114,16 @@ def write_example_config(path: Path) -> None:
         "stop_on_regex": [],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _is_state_shaped_json(path: Path) -> bool:
+    try:
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return "schema_version" in raw
 
 
 def _expect_mapping(value: object, *, source: str) -> Mapping[str, object]:

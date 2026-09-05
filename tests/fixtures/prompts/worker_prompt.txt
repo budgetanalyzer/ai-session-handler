@@ -4,9 +4,9 @@ CONTEXT
 - plan_workspace_path: /plan-repo
 - execution_workspace_path: /service
 - plan_path: /plan-repo/docs/plans/example.md
-- state_path: /plan-repo/.ai-session-handler/example.json
+- state_path: /plan-repo/.ai-session-handler/plans/plan-key/state.json
 - run_id: 20260705T120102Z-phase-2
-- transcript_path: /plan-repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt
+- transcript_path: /plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T120102Z-phase-2.txt
 - selected_phase_id: phase-2
 - selected_phase_title: Prompt Builder
 
@@ -48,7 +48,7 @@ last_run:
   started_at: 2026-07-05T11:50:00Z
   finished_at: 2026-07-05T11:55:00Z
   exit_code: 0
-  transcript_path: .ai-session-handler/transcripts/20260705T115000Z-phase-1.txt
+  transcript_path: .ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt
   summary: Completed parser.
 PREVIOUS STATE SUMMARY END
 

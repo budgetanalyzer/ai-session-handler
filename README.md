@@ -94,18 +94,37 @@ Malformed quoting, an empty command, or invalid placeholder syntax is an input
 error with exit code 5.
 
 Config is always read from `.ai-session-handler/config.json` in the inferred plan
-workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
-in that same plan workspace. The config's `max_phases` value accepts a positive
-integer or `null`; `null` is the default and runs the plan to completion.
+workspace. Each canonical workspace-relative plan path has a SHA-256-derived key,
+and its runner state is stored at
+`.ai-session-handler/plans/<plan-key>/state.json`. Content hashes still detect
+plan edits, but plan identity comes from the canonical path: two plans with the
+same name or content do not share history. The config's `max_phases` value accepts
+a positive integer or `null`; `null` is the default and runs the plan to
+completion.
 
 Provider-specific setup belongs in wrapper scripts, not in runner internals.
 
-The worker prompt is always written under `.ai-session-handler/prompts/` and is
-also piped to the agent process over stdin. Transcripts are written under
-`.ai-session-handler/transcripts/`. The state path included in the worker prompt
-is read-only context: workers must not modify it and must report their outcome
-through exactly one terminal marker. The runner owns all durable state
-transitions derived from that marker.
+Each attempt gets a timestamped, UUID-backed id. Its prompt and transcript are
+written under the owning plan directory at `prompts/<attempt-id>.txt` and
+`transcripts/<attempt-id>.txt`; existing attempt artifacts are never overwritten.
+The prompt is also piped to the agent process over stdin. The state path included
+in the worker prompt is read-only context: workers must not modify it and must
+report their outcome through exactly one terminal marker. The runner owns all
+durable state transitions derived from that marker.
+
+The generated layout is:
+
+```text
+.ai-session-handler/
+├── config.json
+└── plans/
+    └── <plan-key>/
+        ├── state.json
+        ├── prompts/
+        │   └── <attempt-id>.txt
+        └── transcripts/
+            └── <attempt-id>.txt
+```
 
 The runner streams child stdout and stderr to the same streams while also
 capturing both in the transcript. Terminal marker blocks are captured for
@@ -125,7 +144,7 @@ context.
 
 ## Commands
 
-Create the optional example config and generated directories:
+Create the optional example config and shared `plans/` directory:
 
 ```bash
 .venv/bin/ai-session-handler init
@@ -181,6 +200,9 @@ Print durable state and the latest transcript path:
 .venv/bin/ai-session-handler status --plan docs/plans/plan-22.md
 ```
 
+`status` prints the exact keyed state path as well as the plan workspace and
+selected execution workspace.
+
 If a phase stops, a later run refuses to continue by default and prints the
 stored stop message, latest transcript path, and recent transcript output when
 available. After human intervention, rerun that phase explicitly:
@@ -209,6 +231,15 @@ again before each subsequent worker launch and before reporting full completion.
 a checkpoint returns exit code 5 and launches no later worker. Any already recorded phase outcome
 is retained because it describes work performed from the original snapshot. `--accept-plan-change`
 only applies while initializing a new invocation, after completed phase ids are checked.
+
+The runner also compares the stored canonical plan path independently of the
+content hash. Renaming or moving a plan therefore requires an explicit decision
+about whether to start fresh or carry its history forward. Existing stem-based
+state from earlier versions is never silently ignored or reassigned; `run` and
+`status` stop with a transition diagnostic. See
+[State and recovery](docs/state-and-recovery.md) for the backup, identity-check,
+and manual relocation procedure, including the special legacy collision for a
+plan named `config.md`.
 
 ## Plan Format
 

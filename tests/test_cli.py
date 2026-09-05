@@ -13,8 +13,9 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler import __version__
 from ai_session_handler.cli import main
+from ai_session_handler.config import default_state_path, plan_generated_path
 from ai_session_handler.runner import EXIT_AGENT_FAILED, EXIT_BLOCKED, EXIT_INVALID
-from ai_session_handler.state import read_state
+from ai_session_handler.state import RunnerState, read_state, write_state
 
 
 @pytest.fixture(autouse=True)
@@ -59,8 +60,9 @@ def test_init_creates_config_and_directories(
     assert exit_code == 0
     assert "created" in captured.out
     assert (tmp_path / ".ai-session-handler" / "config.json").exists()
-    assert (tmp_path / ".ai-session-handler" / "prompts").is_dir()
-    assert (tmp_path / ".ai-session-handler" / "transcripts").is_dir()
+    assert (tmp_path / ".ai-session-handler" / "plans").is_dir()
+    assert not (tmp_path / ".ai-session-handler" / "prompts").exists()
+    assert not (tmp_path / ".ai-session-handler" / "transcripts").exists()
     config = json.loads(
         (tmp_path / ".ai-session-handler" / "config.json").read_text(encoding="utf-8")
     )
@@ -105,6 +107,7 @@ def test_status_reports_next_phase(
     assert exit_code == 0
     assert "next phase: phase-1 One" in captured.out
     assert f"plan workspace path: {tmp_path}" in captured.out
+    assert f"state path: {default_state_path(tmp_path, plan_path)}" in captured.out
     assert f"execution workspace path: {tmp_path}" in captured.out
     assert "latest transcript: none" in captured.out
 
@@ -142,7 +145,7 @@ def test_run_and_status_resolve_plan_relative_to_nested_caller_directory(
     status_exit_code = main(["status", "--plan", str(relative_plan)])
 
     captured = capsys.readouterr()
-    state_path = workspace / ".ai-session-handler" / "plan.json"
+    state_path = default_state_path(workspace, plan_path)
     assert run_exit_code == 0
     assert status_exit_code == 0
     assert plan_path.resolve() == plan_path
@@ -180,9 +183,9 @@ def test_status_reports_malformed_state_json(
 ) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text(_phase(), encoding="utf-8")
-    state_dir = tmp_path / ".ai-session-handler"
-    state_dir.mkdir()
-    (state_dir / "plan.json").write_text("{", encoding="utf-8")
+    state_path = default_state_path(tmp_path, plan_path)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     exit_code = main(["status", "--plan", "plan.md"])
@@ -248,7 +251,7 @@ def test_invalid_command_template_returns_input_error_without_launching_worker(
     assert "positional command placeholder is not allowed: {}" in captured.err
     assert "Traceback" not in captured.err
     assert not sentinel_path.exists()
-    assert not (tmp_path / ".ai-session-handler" / "plan.json").exists()
+    assert not default_state_path(tmp_path, plan_path).exists()
     assert not (tmp_path / ".ai-session-handler" / "prompts").exists()
     assert not (tmp_path / ".ai-session-handler" / "transcripts").exists()
 
@@ -284,7 +287,7 @@ def test_plan_edit_during_run_returns_hash_mismatch_after_recording_outcome(
     )
 
     captured = capsys.readouterr()
-    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    state = read_state(default_state_path(tmp_path, plan_path))
     assert exit_code == EXIT_INVALID
     assert captured.out.strip() == ""
     assert f"plan hash mismatch: {plan_path}" in captured.err
@@ -392,7 +395,7 @@ def test_run_quiet_suppresses_progress_but_preserves_transcript_and_summary(
     )
 
     captured = capsys.readouterr()
-    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    state = read_state(default_state_path(tmp_path, plan_path))
     assert state.last_run is not None
     transcript = Path(state.last_run.transcript_path).read_text(encoding="utf-8")
 
@@ -489,7 +492,7 @@ def test_run_acceptance_with_fake_agent_subprocess(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "runner-complete: all phases complete" in result.stdout
-    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    state = read_state(default_state_path(tmp_path, plan_path))
     assert state.completed_phase_ids == ("phase-1", "phase-2")
 
 
@@ -523,7 +526,7 @@ def test_run_max_phases_one_stops_after_one_phase(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "phase-complete: phase-1" in result.stdout
-    state = read_state(tmp_path / ".ai-session-handler" / "plan.json")
+    state = read_state(default_state_path(tmp_path, plan_path))
     assert state.completed_phase_ids == ("phase-1",)
 
 
@@ -534,7 +537,7 @@ def test_run_infers_workspace_from_absolute_plan_path(
     workspace = tmp_path / "target-repo"
     other_cwd = tmp_path / "handler-repo"
     plan_path = workspace / "docs" / "plans" / "plan.md"
-    state_path = workspace / ".ai-session-handler" / "plan.json"
+    state_path = default_state_path(workspace, plan_path)
     agent_path = workspace / "agent.py"
     config_path = workspace / ".ai-session-handler" / "config.json"
 
@@ -567,6 +570,109 @@ def test_run_infers_workspace_from_absolute_plan_path(
     assert exit_code == 0
     assert state_path.exists()
     assert read_state(state_path).completed_phase_ids == ("phase-1", "phase-2")
+
+
+def test_same_stem_same_content_plans_keep_separate_history(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    first_plan = tmp_path / "docs" / "first" / "plan.md"
+    second_plan = tmp_path / "docs" / "second" / "plan.md"
+    first_plan.parent.mkdir(parents=True)
+    second_plan.parent.mkdir(parents=True)
+    first_plan.write_text(_phase(), encoding="utf-8")
+    second_plan.write_text(_phase(), encoding="utf-8")
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "print('<phase-complete>Distinct history.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    agent_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}"
+
+    first_exit = main(["run", "--plan", str(first_plan), "--agent-cmd", agent_cmd])
+    capsys.readouterr()
+    second_exit = main(["run", "--plan", str(second_plan), "--agent-cmd", agent_cmd])
+    capsys.readouterr()
+
+    first_state_path = default_state_path(tmp_path, first_plan)
+    second_state_path = default_state_path(tmp_path, second_plan)
+    assert first_exit == 0
+    assert second_exit == 0
+    assert first_state_path != second_state_path
+    first_state = read_state(first_state_path)
+    second_state = read_state(second_state_path)
+    assert first_state.plan is not None
+    assert first_state.plan.path == str(first_plan)
+    assert second_state.plan is not None
+    assert second_state.plan.path == str(second_plan)
+    assert len(list((plan_generated_path(tmp_path, first_plan) / "prompts").glob("*.txt"))) == 1
+    assert len(list((plan_generated_path(tmp_path, second_plan) / "prompts").glob("*.txt"))) == 1
+
+
+def test_status_rejects_legacy_state_without_modifying_it(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    legacy_path = tmp_path / ".ai-session-handler" / "plan.json"
+    write_state(legacy_path, RunnerState())
+    original = legacy_path.read_bytes()
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["status", "--plan", "plan.md"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_INVALID
+    assert "legacy plan state detected" in captured.err
+    assert "docs/state-and-recovery.md" in captured.err
+    assert legacy_path.read_bytes() == original
+    assert not default_state_path(tmp_path, plan_path).exists()
+
+
+def test_config_named_plan_detects_legacy_state_config_collision(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "config.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    collision_path = tmp_path / ".ai-session-handler" / "config.json"
+    write_state(collision_path, RunnerState())
+    original = collision_path.read_bytes()
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["status", "--plan", "config.md"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_INVALID
+    assert "legacy plan state detected" in captured.err
+    assert str(collision_path) in captured.err
+    assert collision_path.read_bytes() == original
+    assert not default_state_path(tmp_path, plan_path).exists()
+
+
+def test_config_named_plan_allows_normal_shared_config(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "config.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    config_path = tmp_path / ".ai-session-handler" / "config.json"
+    config_path.parent.mkdir()
+    config_path.write_text('{"agent_cmd": null}\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["status", "--plan", "config.md"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "next phase: phase-1 One" in captured.out
+    assert captured.err == ""
 
 
 def _phase(

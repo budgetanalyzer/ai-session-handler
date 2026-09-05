@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Final, TextIO
+from uuid import uuid4
 
+from ai_session_handler.artifacts import open_text_exclusively
 from ai_session_handler.markers import (
     MarkerKind,
     MissingMarkerError,
@@ -190,9 +192,9 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
 
 
 def create_run_id(phase: Phase, *, timestamp: datetime | None = None) -> str:
-    """Create a stable run id from a UTC timestamp and phase id."""
+    """Create a human-readable, UUID-unique attempt id."""
     now = datetime.now(UTC) if timestamp is None else timestamp.astimezone(UTC)
-    return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{phase.id}"
+    return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{phase.id}-{uuid4()}"
 
 
 def run_agent_process(
@@ -226,17 +228,22 @@ def run_agent_process(
     )
     output_queue: Queue[_StreamItem] = Queue()
     combined_parts: list[str] = []
-    process = subprocess.Popen(
-        command,
-        cwd=execution_workspace_path,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        shell=False,
-    )
+    transcript = open_text_exclusively(transcript_file)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=execution_workspace_path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+        )
+    except BaseException:
+        transcript.close()
+        raise
 
     assert process.stdout is not None
     assert process.stderr is not None
@@ -285,7 +292,7 @@ def run_agent_process(
         agent_cmd=agent_cmd,
         rendered_command=command,
     )
-    with transcript_file.open("w", encoding="utf-8") as transcript:
+    with transcript:
         transcript.write(render_transcript_header(header))
         while True:
             _drain_output_queue(

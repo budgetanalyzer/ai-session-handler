@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from ai_session_handler.artifacts import write_text_exclusively
 from ai_session_handler.phases import Phase
 from ai_session_handler.state import RunnerState
 
@@ -91,7 +92,7 @@ def write_worker_prompt(generated_dir: Path, context: PromptContext) -> Path:
     prompt_dir = generated_dir / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = prompt_dir / f"{context.run_id}.txt"
-    prompt_path.write_text(render_worker_prompt(context), encoding="utf-8")
+    write_text_exclusively(prompt_path, render_worker_prompt(context))
     return prompt_path
 
 

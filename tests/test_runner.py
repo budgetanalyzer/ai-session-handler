@@ -6,11 +6,14 @@ import re
 import shlex
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
-from ai_session_handler.phases import PlanParseError
+from ai_session_handler.artifacts import ArtifactExistsError
+from ai_session_handler.phases import PlanParseError, read_plan_snapshot
 from ai_session_handler.runner import (
     EXIT_AGENT_FAILED,
     EXIT_BLOCKED,
@@ -18,10 +21,12 @@ from ai_session_handler.runner import (
     EXIT_OK,
     CommandTemplateError,
     RunOptions,
+    create_run_id,
     render_command_template,
     run_phases,
 )
 from ai_session_handler.state import PlanHashMismatchError, StopReason, read_state
+from ai_session_handler.transcripts import transcript_path
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +54,47 @@ def test_run_records_stdout_complete_marker(tmp_path: Path) -> None:
     assert state.last_run is not None
     assert state.last_run.summary == "Implemented phase one."
     assert Path(state.last_run.transcript_path).exists()
+
+
+def test_run_ids_are_unique_for_attempts_in_the_same_second(tmp_path: Path) -> None:
+    phase = read_plan_snapshot(_write_plan(tmp_path)).phases[0]
+    timestamp = datetime(2026, 7, 5, 12, 1, 2, tzinfo=UTC)
+
+    first = create_run_id(phase, timestamp=timestamp)
+    second = create_run_id(phase, timestamp=timestamp)
+
+    assert first != second
+    prefix = "20260705T120102Z-phase-1-"
+    assert first.startswith(prefix)
+    UUID(first.removeprefix(prefix))
+    UUID(second.removeprefix(prefix))
+
+
+def test_existing_transcript_for_forced_duplicate_id_prevents_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    sentinel_path = tmp_path / "launched"
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+    )
+    options = _options(tmp_path, plan_path, script)
+    forced_id = "forced-duplicate-attempt"
+    existing_transcript = transcript_path(options.state_path.parent, forced_id)
+    existing_transcript.parent.mkdir(parents=True)
+    existing_transcript.write_text("original transcript\n", encoding="utf-8")
+    monkeypatch.setattr("ai_session_handler.runner.create_run_id", lambda phase: forced_id)
+
+    with pytest.raises(ArtifactExistsError, match="refusing to overwrite"):
+        run_phases(options)
+
+    assert not sentinel_path.exists()
+    assert existing_transcript.read_text(encoding="utf-8") == "original transcript\n"
 
 
 def test_run_records_stderr_blocked_marker(tmp_path: Path) -> None:

@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from ai_session_handler.config import ConfigError, default_state_path, plan_key
 from ai_session_handler.phases import Phase, parse_phases, read_plan_snapshot
 from ai_session_handler.state import (
     AcceptedPlanChangeError,
     LastRun,
     PhaseRef,
     PlanHashMismatchError,
+    PlanPathMismatchError,
     PlanRecord,
     RunnerState,
     StoppedStateError,
@@ -61,7 +63,7 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
             started_at="2026-07-05T12:01:02Z",
             finished_at="2026-07-05T12:02:03Z",
             exit_code=3,
-            transcript_path=".ai-session-handler/transcripts/run.txt",
+            transcript_path=".ai-session-handler/plans/plan-key/transcripts/run.txt",
             summary="Asked for clarification.",
         ),
     )
@@ -77,6 +79,39 @@ def test_compute_plan_hash_reads_plan_bytes(tmp_path: Path) -> None:
     plan_path.write_bytes(b"## Phase 1: One\nBody\n")
 
     assert compute_plan_hash(plan_path) == sha256(b"## Phase 1: One\nBody\n").hexdigest()
+
+
+def test_plan_key_uses_canonical_workspace_relative_path(tmp_path: Path) -> None:
+    plan_path = tmp_path / "docs" / "plans" / "example.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.touch()
+
+    canonical_key = plan_key(tmp_path, plan_path)
+    alias_key = plan_key(tmp_path / ".", tmp_path / "docs" / ".." / "docs" / "plans" / "example.md")
+
+    assert canonical_key == alias_key
+    assert len(canonical_key) == 64
+
+
+def test_same_stem_plans_have_distinct_state_paths(tmp_path: Path) -> None:
+    first = tmp_path / "docs" / "one" / "plan.md"
+    second = tmp_path / "docs" / "two" / "plan.md"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("same", encoding="utf-8")
+    second.write_text("same", encoding="utf-8")
+
+    assert default_state_path(tmp_path, first) != default_state_path(tmp_path, second)
+
+
+def test_plan_key_rejects_plan_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    plan_path = tmp_path / "outside.md"
+    plan_path.touch()
+
+    with pytest.raises(ConfigError, match="plan is outside workspace"):
+        plan_key(workspace, plan_path)
 
 
 def test_new_state_accepts_current_plan_hash(tmp_path: Path) -> None:
@@ -122,6 +157,26 @@ def test_plan_hash_mismatch_is_rejected_by_default(tmp_path: Path) -> None:
 
     with pytest.raises(PlanHashMismatchError):
         ensure_plan_hash_matches(state, read_plan_snapshot(plan_path))
+
+
+def test_plan_path_mismatch_is_rejected_even_when_content_hash_matches(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.md"
+    second_path = tmp_path / "second.md"
+    plan_text = _plan("One", "Same content\n")
+    first_path.write_text(plan_text, encoding="utf-8")
+    second_path.write_text(plan_text, encoding="utf-8")
+    state = ensure_plan_hash_matches(
+        RunnerState(),
+        read_plan_snapshot(first_path),
+        accepted_at=ACCEPTED_AT,
+    )
+
+    with pytest.raises(PlanPathMismatchError, match="plan path mismatch"):
+        ensure_plan_hash_matches(
+            state,
+            read_plan_snapshot(second_path),
+            accept_plan_change=True,
+        )
 
 
 def test_retry_stopped_is_required_for_stopped_state() -> None:
