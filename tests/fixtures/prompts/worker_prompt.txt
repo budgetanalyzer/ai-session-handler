@@ -22,8 +22,8 @@ INSTRUCTIONS
 - Treat state_path as runner-owned and read-only. Do not create, edit, replace, or delete the state file; report the phase outcome only through the terminal marker.
 - Do not make design-changing guesses. If implementation requires an unplanned product, architecture, schema, API, or workflow decision, stop with <phase-needs-clarification>.
 - Treat user clarification as a first-class stop state, not as failure.
-- End with exactly one terminal marker from the grammar below.
-- Do not emit more than one terminal marker.
+- End one output stream with exactly one terminal marker from the grammar below. The opening tag must begin at a line boundary, the result must be nonempty, and only whitespace may follow the closing tag on that stream.
+- Do not emit recognized terminal tags anywhere else, including examples, quoted text, fenced blocks, progress, or diagnostics. Do not emit a result on both stdout and stderr.
 
 FAILURE MODES
 - Use <phase-blocked> when the phase cannot be completed without external action.

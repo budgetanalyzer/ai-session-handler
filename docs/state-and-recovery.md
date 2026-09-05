@@ -37,13 +37,19 @@ process that reused the numeric PID as the old worker.
 
 A terminal transition atomically clears `active_attempt` and records `last_run`. Completion also
 adds the phase id to `completed_phase_ids` and clears `current_phase`. Blocked, clarification, agent
-failure, marker failure, timeout, stop-regex, launch failure, interruption, and execution IO
+failure, missing, multiple, or invalid marker failure, timeout, stop-regex, launch failure,
+interruption, and execution IO
 outcomes retain `current_phase` and create a typed `stop`. Clarification text remains in
 `stop.clarification_request`; other diagnostic text remains in `stop.message`. A launch failure
 after the prepared record exists and any attempt IO failure return exit code 4. A catchable SIGINT
 or SIGTERM records the interrupted outcome before the handler exits in response to that signal.
 Invalid plans, configuration, command templates, workspaces, or persisted state rejected before
 preparation return exit code 5.
+
+Terminal results are validated independently on stdout and stderr using the framing contract in
+[Worker result protocol](worker-protocol.md). The runner records `invalid-marker` for recognized but
+badly framed tag text and `multiple-markers` for duplicate results, including results emitted on
+both streams. These protocol failures do not advance completed phase ids.
 
 If the handler disappears while an attempt is prepared or running, the durable `active_attempt`
 is intentionally left unresolved. A normal `run` refuses to launch more work. `status` reports the

@@ -753,6 +753,133 @@ def test_run_records_multiple_markers(tmp_path: Path) -> None:
     assert outcome.state.stop.reason is StopReason.MULTIPLE_MARKERS
 
 
+def test_logged_fixture_followed_by_failure_prose_does_not_complete(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "print('<phase-complete>fixture result</phase-complete>')\n"
+        "print('RuntimeError: implementation failed')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.INVALID_MARKER
+
+
+def test_fenced_result_like_example_does_not_complete(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "print('```text')\nprint('<phase-complete>fixture result</phase-complete>')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.INVALID_MARKER
+
+
+def test_result_on_both_streams_is_rejected(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import sys\n"
+        "print('<phase-complete>stdout result</phase-complete>')\n"
+        "print('<phase-blocked>stderr result</phase-blocked>', file=sys.stderr)\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.MULTIPLE_MARKERS
+
+
+def test_stderr_diagnostics_do_not_affect_final_stdout_result(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import sys\n"
+        "print('diagnostic without marker tags', file=sys.stderr)\n"
+        "print('<phase-complete>Implemented.</phase-complete>')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_OK
+    assert outcome.state.completed_phase_ids == ("phase-1",)
+
+
+def test_nonzero_exit_overrides_complete_marker(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import sys\nprint('<phase-complete>Claimed completion.</phase-complete>')\nsys.exit(7)\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.AGENT_FAILED
+
+
+def test_timeout_overrides_complete_marker(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import time\n"
+        "print('<phase-complete>Claimed completion.</phase-complete>', flush=True)\n"
+        "time.sleep(5)\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script, timeout_seconds=0.1))
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.TIMEOUT
+
+
+def test_stop_regex_overrides_complete_marker(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "import time\n"
+        "print('<phase-complete>Claimed completion.</phase-complete>', flush=True)\n"
+        "time.sleep(5)\n",
+    )
+
+    outcome = run_phases(
+        _options(
+            tmp_path,
+            plan_path,
+            script,
+            timeout_seconds=2,
+            stop_on_regex=("Claimed completion",),
+        )
+    )
+
+    assert outcome.exit_code == EXIT_AGENT_FAILED
+    assert outcome.state.completed_phase_ids == ()
+    assert outcome.state.stop is not None
+    assert outcome.state.stop.reason is StopReason.STOP_REGEX
+
+
 def test_max_phases_runs_two_fresh_processes(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text(

@@ -109,8 +109,11 @@ written under the owning plan directory at `prompts/<attempt-id>.txt` and
 `transcripts/<attempt-id>.txt`; existing attempt artifacts are never overwritten.
 The prompt is also piped to the agent process over stdin. The state path included
 in the worker prompt is read-only context: workers must not modify it and must
-report their outcome through exactly one terminal marker. The runner owns all
-durable state transitions derived from that marker.
+report their outcome through exactly one terminal result block. The block must begin at a line
+boundary, contain a nonempty result, and end as the final non-whitespace content of either stdout
+or stderr. Recognized tags in examples or diagnostics, malformed framing, extra blocks, or results
+on both streams fail closed. See [Worker result protocol](docs/worker-protocol.md) for the complete
+contract. The runner owns all durable state transitions derived from the result.
 
 Before launch, state records a prepared active attempt; after launch it records a running attempt
 and a reuse-resistant Linux process identity when available. If the handler disappears before a
@@ -151,10 +154,12 @@ is complete or safe to retry. See [State and recovery](docs/state-and-recovery.m
 recovery details.
 
 The runner streams child stdout and stderr to the same streams while also
-capturing both in the transcript. Terminal marker blocks are captured for
-parsing but hidden from the live console; the CLI prints the final phase result
-once after state is updated. Runner-owned errors, including invalid inputs and
-failed agent outcomes, are printed to stderr. Failed agent outcomes also print
+capturing both in the transcript and retaining their identities for result validation. Terminal
+marker blocks are captured for parsing but hidden from the live console; interleaving between the
+independent pipes cannot manufacture a result. A nonzero exit, timeout, or controlled stop
+overrides a completion marker. The CLI prints the final phase result once after state is updated.
+Runner-owned errors, including invalid inputs and failed agent outcomes, are printed to stderr.
+Failed agent outcomes also print
 the transcript path and recent transcript output for debugging. Transcript
 headers distinguish the plan and execution workspace paths and include rendered
 argv; if a process exits without stdout or stderr, the transcript records that
@@ -345,13 +350,16 @@ container-local virtualenv:
 
 That wrapper is shipped by this project but remains outside runner internals. It
 sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output,
-streams stdout/stderr as Codex runs while filtering live terminal marker blocks,
-captures the final message, and re-emits the single terminal marker from the
-final message. This keeps the core runner provider-agnostic while preserving the
-runner's exactly-one-marker contract. Its child remains in the process group
+streams stdout/stderr as Codex runs while filtering live terminal marker blocks and sanitizing
+diagnostic marker text. It captures the final message and re-emits a terminal result only after
+validating that file against the strict framing contract. This keeps the core runner
+provider-agnostic while preserving the runner's exactly-one-result contract. Its child remains in the process group
 created by the core runner, so lifecycle cleanup also reaches the provider
 process. Omit `--model` to use the Codex CLI default or the `CODEX_MODEL` value
 already present in the environment.
+
+A well-framed `phase-complete` result is still the worker's assertion, not automated review or
+user approval. Final acceptance remains a manual user decision.
 
 ## Exit Codes
 

@@ -45,6 +45,15 @@ def test_render_worker_prompt_marks_state_as_runner_owned_and_read_only() -> Non
     assert "report the phase outcome only through the terminal marker" in prompt
 
 
+def test_render_worker_prompt_requires_strict_terminal_marker_framing() -> None:
+    prompt = render_worker_prompt(_prompt_context())
+
+    assert "opening tag must begin at a line boundary" in prompt
+    assert "only whitespace may follow the closing tag" in prompt
+    assert "including examples, quoted text, fenced blocks, progress, or diagnostics" in prompt
+    assert "Do not emit a result on both stdout and stderr" in prompt
+
+
 def test_write_worker_prompt_writes_run_prompt_file(tmp_path: Path) -> None:
     context = _prompt_context()
     generated_dir = tmp_path / ".ai-session-handler" / "plans" / "plan-key"

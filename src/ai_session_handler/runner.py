@@ -26,6 +26,7 @@ from uuid import uuid4
 
 from ai_session_handler.artifacts import open_text_exclusively
 from ai_session_handler.markers import (
+    InvalidMarkerError,
     MarkerKind,
     MissingMarkerError,
     MultipleMarkersError,
@@ -104,6 +105,8 @@ class ProcessResult:
 
     exit_code: int
     combined_output: str
+    stdout_output: str
+    stderr_output: str
     started_at: str
     finished_at: str
     transcript_path: Path
@@ -398,6 +401,7 @@ def run_agent_process(
     )
     output_queue: Queue[_OutputQueueItem] = Queue()
     combined_parts: list[str] = []
+    stream_parts: dict[str, list[str]] = {"stdout": [], "stderr": []}
     transcript = open_text_exclusively(transcript_file)
     stdout_target = None if quiet else (sys.stdout if stdout is None else stdout)
     stderr_target = None if quiet else (sys.stderr if stderr is None else stderr)
@@ -478,6 +482,7 @@ def run_agent_process(
                         output_queue,
                         transcript,
                         combined_parts,
+                        stream_parts,
                         stdout_target,
                         stderr_target,
                         display_filters,
@@ -509,6 +514,7 @@ def run_agent_process(
                         item,
                         transcript,
                         combined_parts,
+                        stream_parts,
                         stdout_target,
                         stderr_target,
                         display_filters,
@@ -521,10 +527,12 @@ def run_agent_process(
                 output_queue,
                 transcript,
                 combined_parts,
+                stream_parts,
                 stdout_target,
                 stderr_target,
                 display_filters,
             )
+            _finish_display_filters(display_filters, stdout_target, stderr_target)
             if not combined_parts:
                 transcript.write(
                     f"[runner] process exited with code {return_code} "
@@ -542,6 +550,8 @@ def run_agent_process(
     return ProcessResult(
         exit_code=return_code,
         combined_output="".join(combined_parts),
+        stdout_output="".join(stream_parts["stdout"]),
+        stderr_output="".join(stream_parts["stderr"]),
         started_at=process_started_at,
         finished_at=finished_at,
         transcript_path=transcript_file,
@@ -664,11 +674,13 @@ def apply_process_result(
         return _stopped_runner_failure(state, phase, result, StopReason.AGENT_FAILED)
 
     try:
-        marker = parse_terminal_marker(result.combined_output)
+        marker = parse_terminal_marker(result.stdout_output, result.stderr_output)
     except MissingMarkerError:
         return _stopped_runner_failure(state, phase, result, StopReason.MISSING_MARKER)
     except MultipleMarkersError:
         return _stopped_runner_failure(state, phase, result, StopReason.MULTIPLE_MARKERS)
+    except InvalidMarkerError:
+        return _stopped_runner_failure(state, phase, result, StopReason.INVALID_MARKER)
 
     if marker.kind is MarkerKind.COMPLETE:
         completed = state.completed_phase_ids
@@ -846,6 +858,8 @@ def _failure_message(reason: StopReason, process_exit_code: int) -> str:
         return "agent output did not contain a terminal marker"
     if reason is StopReason.MULTIPLE_MARKERS:
         return "agent output contained multiple terminal markers"
+    if reason is StopReason.INVALID_MARKER:
+        return "agent output contained an invalid terminal marker"
     return reason.value
 
 
@@ -878,6 +892,7 @@ def _drain_output_queue(
     output_queue: Queue[_OutputQueueItem],
     transcript: TextIO,
     combined_parts: list[str],
+    stream_parts: dict[str, list[str]],
     stdout: TextIO | None,
     stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
@@ -887,13 +902,22 @@ def _drain_output_queue(
             item = output_queue.get_nowait()
         except Empty:
             return
-        _write_stream_item(item, transcript, combined_parts, stdout, stderr, display_filters)
+        _write_stream_item(
+            item,
+            transcript,
+            combined_parts,
+            stream_parts,
+            stdout,
+            stderr,
+            display_filters,
+        )
 
 
 def _write_stream_item(
     item: _OutputQueueItem,
     transcript: TextIO,
     combined_parts: list[str],
+    stream_parts: dict[str, list[str]],
     stdout: TextIO | None,
     stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
@@ -901,6 +925,7 @@ def _write_stream_item(
     if isinstance(item, _StreamFailure):
         raise OSError(f"failed reading agent {item.stream_name}: {item.error}") from item.error
     combined_parts.append(item.text)
+    stream_parts[item.stream_name].append(item.text)
     target = stdout if item.stream_name == "stdout" else stderr
     if target is not None:
         display_text = display_filters[item.stream_name].filter(item.text)
@@ -909,6 +934,20 @@ def _write_stream_item(
             target.flush()
     transcript.write(item.text)
     transcript.flush()
+
+
+def _finish_display_filters(
+    display_filters: dict[str, TerminalMarkerFilter],
+    stdout: TextIO | None,
+    stderr: TextIO | None,
+) -> None:
+    for stream_name, target in (("stdout", stdout), ("stderr", stderr)):
+        if target is None:
+            continue
+        display_text = display_filters[stream_name].finish()
+        if display_text:
+            target.write(display_text)
+            target.flush()
 
 
 def _first_matching_pattern(

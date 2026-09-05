@@ -62,6 +62,10 @@ def _stream_filtered_output(
             if visible_chunk:
                 target.write(visible_chunk)
                 target.flush()
+        trailing_text = _sanitize_markers(marker_filter.finish())
+        if trailing_text:
+            target.write(trailing_text)
+            target.flush()
     except BaseException as error:
         failures.put(error)
 
@@ -155,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             if marker is not None:
                 tag = marker.kind.value
-                sys.stdout.write(f"<{tag}>{marker.text}</{tag}>\n")
+                sys.stdout.write(f"\n<{tag}>{marker.text}</{tag}>\n")
             elif final_message.strip():
                 sys.stdout.write(_sanitize_markers(final_message))
                 if not final_message.endswith("\n"):

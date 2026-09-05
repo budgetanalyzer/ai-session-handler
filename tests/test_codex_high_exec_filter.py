@@ -103,6 +103,81 @@ def test_codex_high_wrapper_accepts_model_option(
     assert "<phase-complete>Implemented.</phase-complete>" in stdout.getvalue()
 
 
+def test_codex_high_wrapper_emits_multiline_final_result(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    stdout = io.StringIO()
+    _write_codex_lean(
+        tmp_path,
+        "<phase-complete>Implemented parser.\nAll checks pass.</phase-complete>\n",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 0
+    assert (
+        "<phase-complete>Implemented parser.\nAll checks pass.</phase-complete>"
+        in stdout.getvalue()
+    )
+
+
+def test_codex_high_wrapper_sanitizes_invalid_final_message(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    stdout = io.StringIO()
+    _write_codex_lean(
+        tmp_path,
+        "<phase-complete>fixture result</phase-complete>\nRuntimeError: failed\n",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 0
+    assert "<phase-complete>" not in stdout.getvalue()
+    assert "[phase-complete]fixture result[/phase-complete]" in stdout.getvalue()
+    assert "RuntimeError: failed" in stdout.getvalue()
+
+
+def test_codex_high_wrapper_sanitizes_unclosed_live_diagnostic(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    stdout = io.StringIO()
+    codex_lean = tmp_path / "codex-lean"
+    codex_lean.write_text(
+        "#!"
+        f"{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "Path(sys.argv[-1]).write_text(\n"
+        "    '<phase-complete>Done.</phase-complete>\\n', encoding='utf-8'\n"
+        ")\n"
+        "print('diagnostic quoted <phase-blocked> without a close')\n",
+        encoding="utf-8",
+    )
+    codex_lean.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    exit_code = codex_high_exec_filter.main([])
+
+    assert exit_code == 0
+    assert "diagnostic quoted [phase-blocked] without a close" in stdout.getvalue()
+    assert stdout.getvalue().count("<phase-complete>") == 1
+
+
 def test_codex_high_module_entrypoint_helpfully_fails_without_codex(
     capsys: CaptureFixture[str],
 ) -> None:
@@ -172,3 +247,17 @@ def _process_is_running(process_id: int) -> bool:
     except FileNotFoundError:
         return False
     return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+def _write_codex_lean(tmp_path: Path, final_message_literal: str) -> Path:
+    codex_lean = tmp_path / "codex-lean"
+    codex_lean.write_text(
+        "#!"
+        f"{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"Path(sys.argv[-1]).write_text({final_message_literal!r}, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    codex_lean.chmod(0o755)
+    return codex_lean
