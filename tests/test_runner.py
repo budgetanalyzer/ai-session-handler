@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import io
+import os
 import re
 import shlex
+import signal
+import subprocess
 import sys
+import time
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +29,7 @@ from ai_session_handler.runner import (
     RunOptions,
     create_run_id,
     render_command_template,
+    run_agent_process,
     run_phases,
 )
 from ai_session_handler.state import PlanHashMismatchError, StopReason, read_state
@@ -193,6 +200,266 @@ def test_run_records_stop_regex(tmp_path: Path) -> None:
     assert outcome.exit_code == EXIT_AGENT_FAILED
     assert outcome.state.stop is not None
     assert outcome.state.stop.reason is StopReason.STOP_REGEX
+
+
+def test_stop_regex_kills_resistant_descendants_after_leader_exit(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="print('stop now', flush=True)\n",
+    )
+
+    try:
+        outcome = run_phases(
+            _options(
+                tmp_path,
+                plan_path,
+                script,
+                timeout_seconds=3,
+                stop_on_regex=("stop now",),
+            )
+        )
+
+        assert outcome.exit_code == EXIT_AGENT_FAILED
+        assert outcome.state.stop is not None
+        assert outcome.state.stop.reason is StopReason.STOP_REGEX
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_timeout_kills_wrapper_child_and_resistant_grandchild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "codex.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    grandchild_source = (
+        "import os, signal, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"Path({str(grandchild_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+    codex_lean = _write_agent(
+        tmp_path,
+        "codex-lean",
+        f"#!{sys.executable}\n"
+        "import os, signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        f"subprocess.Popen([{sys.executable!r}, '-c', {grandchild_source!r}])\n"
+        "while not Path(sys.argv[-1]).parent.joinpath('never-created').exists():\n"
+        "    time.sleep(1)\n",
+    )
+    codex_lean.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    wrapper_command = (
+        f"{shlex.quote(sys.executable)} -m "
+        "ai_session_handler.provider_wrappers.codex_high_exec_filter"
+    )
+    options = replace(
+        _options(tmp_path, plan_path, codex_lean, timeout_seconds=1),
+        agent_cmd=wrapper_command,
+    )
+
+    try:
+        outcome = run_phases(options)
+
+        assert outcome.exit_code == EXIT_AGENT_FAILED
+        assert outcome.state.stop is not None
+        assert outcome.state.stop.reason is StopReason.TIMEOUT
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_broken_live_output_sink_cleans_up_worker_group(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    phase = read_plan_snapshot(plan_path).phases[0]
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="print('trigger broken sink', flush=True)\nwhile True:\n    time.sleep(1)\n",
+    )
+
+    try:
+        with pytest.raises(OSError, match="broken output sink"):
+            run_agent_process(
+                agent_cmd=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                prompt_text="prompt",
+                prompt_path=tmp_path / "prompt.txt",
+                plan_workspace_path=tmp_path,
+                execution_workspace_path=tmp_path,
+                run_id="broken-output",
+                transcript_file=tmp_path / "transcript.txt",
+                state_file=tmp_path / "state.json",
+                phase=phase,
+                plan_path=plan_path,
+                timeout_seconds=3,
+                stop_patterns=(),
+                stdout=_BrokenWriter(),
+            )
+
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_transcript_header_failure_prevents_worker_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    phase = read_plan_snapshot(plan_path).phases[0]
+    sentinel_path = tmp_path / "launched"
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        f"from pathlib import Path\nPath({str(sentinel_path)!r}).touch()\n",
+    )
+    monkeypatch.setattr(
+        "ai_session_handler.runner.open_text_exclusively",
+        lambda path: _BrokenWriter(),
+    )
+
+    with pytest.raises(OSError, match="broken output sink"):
+        run_agent_process(
+            agent_cmd=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+            prompt_text="prompt",
+            prompt_path=tmp_path / "prompt.txt",
+            plan_workspace_path=tmp_path,
+            execution_workspace_path=tmp_path,
+            run_id="broken-transcript",
+            transcript_file=tmp_path / "transcript.txt",
+            state_file=tmp_path / "state.json",
+            phase=phase,
+            plan_path=plan_path,
+            timeout_seconds=3,
+            stop_patterns=(),
+        )
+
+    assert not sentinel_path.exists()
+
+
+def test_transcript_write_failure_cleans_up_worker_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_path = _write_plan(tmp_path)
+    phase = read_plan_snapshot(plan_path).phases[0]
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source=(
+            "print('trigger transcript failure', flush=True)\nwhile True:\n    time.sleep(1)\n"
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_session_handler.runner.open_text_exclusively",
+        lambda path: _HeaderOnlyWriter(),
+    )
+
+    try:
+        with pytest.raises(OSError, match="broken transcript"):
+            run_agent_process(
+                agent_cmd=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                prompt_text="prompt",
+                prompt_path=tmp_path / "prompt.txt",
+                plan_workspace_path=tmp_path,
+                execution_workspace_path=tmp_path,
+                run_id="broken-transcript-body",
+                transcript_file=tmp_path / "transcript.txt",
+                state_file=tmp_path / "state.json",
+                phase=phase,
+                plan_path=plan_path,
+                timeout_seconds=3,
+                stop_patterns=(),
+            )
+
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
+
+
+def test_process_signal_handlers_are_restored_after_success(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "print('<phase-complete>Done.</phase-complete>')\n",
+    )
+
+    outcome = run_phases(_options(tmp_path, plan_path, script))
+
+    assert outcome.exit_code == EXIT_OK
+    assert signal.getsignal(signal.SIGINT) is previous_sigint
+    assert signal.getsignal(signal.SIGTERM) is previous_sigterm
+
+
+def test_sigterm_cleans_up_worker_group(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    script = _write_process_tree_agent(
+        tmp_path,
+        child_pid_path=child_pid_path,
+        grandchild_pid_path=grandchild_pid_path,
+        leader_source="while True:\n    time.sleep(1)\n",
+    )
+    handler = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "ai_session_handler",
+            "run",
+            "--plan",
+            str(plan_path),
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+            "--timeout",
+            "10",
+            "--quiet",
+        ],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    try:
+        _wait_for_paths(handler, child_pid_path, grandchild_pid_path)
+        handler.send_signal(signal.SIGTERM)
+
+        assert handler.wait(timeout=4) == 128 + signal.SIGTERM
+        assert not _process_is_running(_read_pid(child_pid_path))
+        assert not _process_is_running(_read_pid(grandchild_pid_path))
+    finally:
+        if handler.poll() is None:
+            handler.kill()
+        with suppress(subprocess.TimeoutExpired):
+            handler.wait(timeout=1)
+        _kill_recorded_processes(child_pid_path, grandchild_pid_path)
 
 
 def test_invalid_stop_regex_does_not_write_state(tmp_path: Path) -> None:
@@ -701,3 +968,91 @@ def _write_agent(tmp_path: Path, name: str, source: str) -> Path:
     script = tmp_path / name
     script.write_text(source, encoding="utf-8")
     return script
+
+
+class _BrokenWriter(io.StringIO):
+    def write(self, text: str) -> int:
+        del text
+        raise OSError("broken output sink")
+
+
+class _HeaderOnlyWriter(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_count = 0
+
+    def write(self, text: str) -> int:
+        self.write_count += 1
+        if self.write_count > 1:
+            raise OSError("broken transcript")
+        return super().write(text)
+
+
+def _write_process_tree_agent(
+    tmp_path: Path,
+    *,
+    child_pid_path: Path,
+    grandchild_pid_path: Path,
+    leader_source: str,
+) -> Path:
+    grandchild_source = (
+        "import os, signal, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"Path({str(grandchild_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+    child_source = (
+        "import os, signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild_source!r}])\n"
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+    source = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_source!r}])\n"
+        f"while not (Path({str(child_pid_path)!r}).exists() "
+        f"and Path({str(grandchild_pid_path)!r}).exists()):\n"
+        "    time.sleep(0.01)\n"
+        f"{leader_source}"
+    )
+    return _write_agent(tmp_path, "process-tree-agent.py", source)
+
+
+def _read_pid(path: Path) -> int:
+    return int(path.read_text(encoding="utf-8"))
+
+
+def _process_is_running(process_id: int) -> bool:
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+def _kill_recorded_processes(*paths: Path) -> None:
+    for path in paths:
+        if not path.exists():
+            continue
+        with suppress(ProcessLookupError):
+            os.kill(_read_pid(path), signal.SIGKILL)
+
+
+def _wait_for_paths(process: subprocess.Popen[str], *paths: Path) -> None:
+    deadline = time.monotonic() + 3
+    while not all(path.exists() for path in paths):
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                f"handler exited before worker readiness ({process.returncode}): "
+                f"stdout={stdout!r}, stderr={stderr!r}"
+            )
+        if time.monotonic() >= deadline:
+            pytest.fail("worker tree did not report readiness before the outer deadline")
+        time.sleep(0.01)

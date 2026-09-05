@@ -24,6 +24,28 @@ Attempt ids retain a UTC timestamp and phase id for operators and include a UUID
 Prompt and transcript files are created exclusively. If an artifact with the selected attempt id
 already exists, the runner stops instead of truncating or replacing it.
 
+## Worker Process Ownership
+
+The Linux-container runner starts every worker in a new POSIX session and process group. The
+worker command, its provider wrapper, and ordinary descendants inherit that group. A timeout,
+stop-regex match, catchable handler interruption, or execution/streaming exception causes the
+runner to signal the whole group with SIGTERM, allow a short grace period, and then send SIGKILL
+if members remain. Cleanup is based on the group identity retained at launch, so it still runs if
+the original group leader exits before a resistant descendant. The runner never signals its own
+process group.
+
+Pipes, transcript handles, and stream threads are closed or joined after process cleanup. Attempt
+artifacts are opened and their transcript header is written before launch where possible, so an
+initial artifact IO failure does not start a worker. The bundled Codex wrapper does not create a
+nested session or process group: its `codex-lean` child remains reachable by the outer handler's
+group cleanup, and direct wrapper exceptions also terminate that immediate child.
+
+This is lifecycle management, not an OS sandbox. It cannot guarantee cleanup if the handler is
+killed with SIGKILL, the container or kernel stops abruptly, or a descendant deliberately
+daemonizes into another session/process group. It also cannot make partial workspace edits
+exactly-once. After an abrupt interruption, inspect the workspace and process table before any
+manual retry; durable interrupted-attempt recovery is handled by a later state-schema phase.
+
 ## Legacy Stem-Based Layout
 
 Earlier versions stored plan state at `.ai-session-handler/<plan-stem>.json` and mixed all prompts

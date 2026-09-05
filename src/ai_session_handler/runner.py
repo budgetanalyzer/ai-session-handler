@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import shlex
+import signal
 import string
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
-from contextlib import suppress
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Final, TextIO
+from types import FrameType
+from typing import Final, NoReturn, TextIO
 from uuid import uuid4
 
 from ai_session_handler.artifacts import open_text_exclusively
@@ -57,6 +60,8 @@ EXIT_INVALID: Final[int] = 5
 _SUPPORTED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
     {"prompt_file", "workspace", "run_id", "transcript_file", "state_file"}
 )
+_PROCESS_GROUP_GRACE_SECONDS: Final[float] = 0.5
+_THREAD_JOIN_SECONDS: Final[float] = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,15 @@ class ProcessResult:
 class _StreamItem:
     stream_name: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamFailure:
+    stream_name: str
+    error: BaseException
+
+
+type _OutputQueueItem = _StreamItem | _StreamFailure
 
 
 class CommandTemplateError(ValueError):
@@ -217,7 +231,6 @@ def run_agent_process(
 ) -> ProcessResult:
     """Execute the agent command, capturing output and optionally streaming it live."""
     started_at = format_utc_timestamp()
-    transcript_file.parent.mkdir(parents=True, exist_ok=True)
     command = render_command_template(
         agent_cmd,
         prompt_file=prompt_path,
@@ -226,53 +239,9 @@ def run_agent_process(
         transcript_file=transcript_file,
         state_file=state_file,
     )
-    output_queue: Queue[_StreamItem] = Queue()
+    output_queue: Queue[_OutputQueueItem] = Queue()
     combined_parts: list[str] = []
     transcript = open_text_exclusively(transcript_file)
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=execution_workspace_path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            shell=False,
-        )
-    except BaseException:
-        transcript.close()
-        raise
-
-    assert process.stdout is not None
-    assert process.stderr is not None
-    threads = [
-        threading.Thread(
-            target=_read_stream,
-            args=("stdout", process.stdout, output_queue),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_read_stream,
-            args=("stderr", process.stderr, output_queue),
-            daemon=True,
-        ),
-    ]
-    for thread in threads:
-        thread.start()
-
-    timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
-    assert process.stdin is not None
-    stdin_thread = threading.Thread(
-        target=_write_stdin,
-        args=(process.stdin, prompt_text),
-        daemon=True,
-    )
-    stdin_thread.start()
-
-    stop_reason: StopReason | None = None
-    stop_message: str | None = None
     stdout_target = None if quiet else (sys.stdout if stdout is None else stdout)
     stderr_target = None if quiet else (sys.stderr if stderr is None else stderr)
     display_filters = {
@@ -292,9 +261,100 @@ def run_agent_process(
         agent_cmd=agent_cmd,
         rendered_command=command,
     )
+    process: subprocess.Popen[str] | None = None
+    process_group_id: int | None = None
+    threads: list[threading.Thread] = []
+    lifecycle_complete = False
+    stop_reason: StopReason | None = None
+    stop_message: str | None = None
+    return_code: int
+
     with transcript:
         transcript.write(render_transcript_header(header))
-        while True:
+        transcript.flush()
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=execution_workspace_path,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                start_new_session=True,
+            )
+            process_group_id = process.pid
+            assert process.stdin is not None
+            assert process.stdout is not None
+            assert process.stderr is not None
+            threads = [
+                threading.Thread(
+                    target=_read_stream,
+                    args=("stdout", process.stdout, output_queue),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_read_stream,
+                    args=("stderr", process.stderr, output_queue),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_write_stdin,
+                    args=(process.stdin, prompt_text),
+                    daemon=True,
+                ),
+            ]
+            for thread in threads:
+                thread.start()
+
+            timeout_at = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+            with _managed_termination_signals():
+                while True:
+                    _drain_output_queue(
+                        output_queue,
+                        transcript,
+                        combined_parts,
+                        stdout_target,
+                        stderr_target,
+                        display_filters,
+                    )
+                    if stop_reason is None:
+                        matched_pattern = _first_matching_pattern(stop_patterns, combined_parts)
+                        if matched_pattern is not None:
+                            stop_reason = StopReason.STOP_REGEX
+                            stop_message = f"output matched stop regex: {matched_pattern.pattern}"
+                            _terminate_process_group(process, process_group_id)
+
+                    if (
+                        stop_reason is None
+                        and timeout_at is not None
+                        and time.monotonic() >= timeout_at
+                    ):
+                        stop_reason = StopReason.TIMEOUT
+                        stop_message = f"agent command timed out after {timeout_seconds:g} seconds"
+                        _terminate_process_group(process, process_group_id)
+
+                    if process.poll() is not None:
+                        break
+
+                    try:
+                        item = output_queue.get(timeout=0.05)
+                    except Empty:
+                        continue
+                    _write_stream_item(
+                        item,
+                        transcript,
+                        combined_parts,
+                        stdout_target,
+                        stderr_target,
+                        display_filters,
+                    )
+
+            return_code = process.wait()
+            _terminate_process_group(process, process_group_id)
+            _join_threads(threads)
             _drain_output_queue(
                 output_queue,
                 transcript,
@@ -303,49 +363,18 @@ def run_agent_process(
                 stderr_target,
                 display_filters,
             )
-            if stop_reason is None:
-                matched_pattern = _first_matching_pattern(stop_patterns, combined_parts)
-                if matched_pattern is not None:
-                    stop_reason = StopReason.STOP_REGEX
-                    stop_message = f"output matched stop regex: {matched_pattern.pattern}"
-                    _terminate_process(process)
-
-            if stop_reason is None and timeout_at is not None and time.monotonic() >= timeout_at:
-                stop_reason = StopReason.TIMEOUT
-                stop_message = f"agent command timed out after {timeout_seconds:g} seconds"
-                _terminate_process(process)
-
-            if process.poll() is not None:
-                break
-
-            try:
-                item = output_queue.get(timeout=0.05)
-            except Empty:
-                continue
-            _write_stream_item(
-                item,
-                transcript,
-                combined_parts,
-                stdout_target,
-                stderr_target,
-                display_filters,
-            )
-
-        return_code = process.wait()
-        for thread in (*threads, stdin_thread):
-            thread.join(timeout=1)
-        _drain_output_queue(
-            output_queue,
-            transcript,
-            combined_parts,
-            stdout_target,
-            stderr_target,
-            display_filters,
-        )
-        if not combined_parts:
-            transcript.write(
-                f"[runner] process exited with code {return_code} without stdout/stderr output\n"
-            )
+            if not combined_parts:
+                transcript.write(
+                    f"[runner] process exited with code {return_code} "
+                    "without stdout/stderr output\n"
+                )
+            lifecycle_complete = True
+        finally:
+            if process is not None and process_group_id is not None and not lifecycle_complete:
+                _terminate_process_group(process, process_group_id)
+            if process is not None:
+                _close_process_pipes(process)
+            _join_threads(threads)
 
     finished_at = format_utc_timestamp()
     return ProcessResult(
@@ -575,12 +604,19 @@ def _failure_message(reason: StopReason, process_exit_code: int) -> str:
     return reason.value
 
 
-def _read_stream(stream_name: str, stream: TextIO, output_queue: Queue[_StreamItem]) -> None:
-    while True:
-        chunk = stream.readline()
-        if chunk == "":
-            break
-        output_queue.put(_StreamItem(stream_name=stream_name, text=chunk))
+def _read_stream(
+    stream_name: str,
+    stream: TextIO,
+    output_queue: Queue[_OutputQueueItem],
+) -> None:
+    try:
+        while True:
+            chunk = stream.readline()
+            if chunk == "":
+                break
+            output_queue.put(_StreamItem(stream_name=stream_name, text=chunk))
+    except BaseException as error:
+        output_queue.put(_StreamFailure(stream_name=stream_name, error=error))
 
 
 def _write_stdin(stream: TextIO, prompt_text: str) -> None:
@@ -594,7 +630,7 @@ def _write_stdin(stream: TextIO, prompt_text: str) -> None:
 
 
 def _drain_output_queue(
-    output_queue: Queue[_StreamItem],
+    output_queue: Queue[_OutputQueueItem],
     transcript: TextIO,
     combined_parts: list[str],
     stdout: TextIO | None,
@@ -610,13 +646,15 @@ def _drain_output_queue(
 
 
 def _write_stream_item(
-    item: _StreamItem,
+    item: _OutputQueueItem,
     transcript: TextIO,
     combined_parts: list[str],
     stdout: TextIO | None,
     stderr: TextIO | None,
     display_filters: dict[str, TerminalMarkerFilter],
 ) -> None:
+    if isinstance(item, _StreamFailure):
+        raise OSError(f"failed reading agent {item.stream_name}: {item.error}") from item.error
     combined_parts.append(item.text)
     target = stdout if item.stream_name == "stdout" else stderr
     if target is not None:
@@ -651,12 +689,74 @@ def _compile_stop_patterns(stop_on_regex: Sequence[str]) -> list[re.Pattern[str]
     return patterns
 
 
-def _terminate_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
+def _terminate_process_group(process: subprocess.Popen[str], process_group_id: int) -> None:
+    if process_group_id == os.getpgrp():
+        raise RuntimeError("refusing to signal the handler's own process group")
+
+    _signal_process_group(process_group_id, signal.SIGTERM)
+    deadline = time.monotonic() + _PROCESS_GROUP_GRACE_SECONDS
+    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
+        process.poll()
+        time.sleep(0.01)
+
+    if _process_group_exists(process_group_id):
+        _signal_process_group(process_group_id, signal.SIGKILL)
+
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+
+
+def _signal_process_group(process_group_id: int, signal_number: int) -> None:
+    with suppress(ProcessLookupError):
+        os.killpg(process_group_id, signal_number)
+
+
+def _process_group_exists(process_group_id: int) -> bool:
     try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2)
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(BrokenPipeError, OSError, ValueError):
+                stream.close()
+
+
+def _join_threads(threads: Sequence[threading.Thread]) -> None:
+    for thread in threads:
+        thread.join(timeout=_THREAD_JOIN_SECONDS)
+
+
+@contextmanager
+def _managed_termination_signals() -> Iterator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    handled_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_handlers = {
+        signal_number: signal.getsignal(signal_number) for signal_number in handled_signals
+    }
+    try:
+        signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
+        signal.signal(signal.SIGTERM, _raise_system_exit)
+        yield
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
+
+
+def _raise_keyboard_interrupt(signal_number: int, frame: FrameType | None) -> NoReturn:
+    del signal_number, frame
+    raise KeyboardInterrupt
+
+
+def _raise_system_exit(signal_number: int, frame: FrameType | None) -> NoReturn:
+    del frame
+    raise SystemExit(128 + signal_number)

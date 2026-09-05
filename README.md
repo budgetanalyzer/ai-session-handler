@@ -136,6 +136,16 @@ headers distinguish the plan and execution workspace paths and include rendered
 argv; if a process exits without stdout or stderr, the transcript records that
 explicitly.
 
+Each worker starts in a new POSIX session and process group. On a timeout, a
+stop-regex match, an execution/streaming exception, or a catchable handler
+interruption, the runner sends SIGTERM to the complete group, waits briefly,
+then sends SIGKILL if any group members remain. It also cleans up ordinary
+descendants that outlive a worker process so inherited pipes cannot hold the
+runner open. The bundled Codex wrapper keeps its child inside the handler-owned
+group and cleans up that child when the wrapper itself fails or is interrupted.
+See [State and recovery](docs/state-and-recovery.md) for the guarantee and its
+limits.
+
 Pass `--quiet` to suppress live child stdout and stderr while still capturing
 the complete transcript, parsing terminal markers, and printing the final phase
 result. This is useful when invoking the handler from another agent session,
@@ -318,8 +328,10 @@ sets Codex's high-reasoning mode, runs `codex-lean exec` with non-colored output
 streams stdout/stderr as Codex runs while filtering live terminal marker blocks,
 captures the final message, and re-emits the single terminal marker from the
 final message. This keeps the core runner provider-agnostic while preserving the
-runner's exactly-one-marker contract. Omit `--model` to use the Codex CLI
-default or the `CODEX_MODEL` value already present in the environment.
+runner's exactly-one-marker contract. Its child remains in the process group
+created by the core runner, so lifecycle cleanup also reaches the provider
+process. Omit `--model` to use the Codex CLI default or the `CODEX_MODEL` value
+already present in the environment.
 
 ## Exit Codes
 

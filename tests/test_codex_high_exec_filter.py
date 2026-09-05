@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
+import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 from ai_session_handler.provider_wrappers import codex_high_exec_filter
@@ -118,3 +121,54 @@ def test_codex_high_module_entrypoint_helpfully_fails_without_codex(
 
     assert result.returncode != 0
     assert "codex-lean" in result.stderr
+
+
+def test_codex_high_wrapper_cleans_up_child_after_output_failure(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    child_pid_path = tmp_path / "codex.pid"
+    codex_lean = tmp_path / "codex-lean"
+    codex_lean.write_text(
+        "#!"
+        f"{sys.executable}\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import signal\n"
+        "import time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "print('trigger broken wrapper output', flush=True)\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    codex_lean.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("worker prompt"))
+    monkeypatch.setattr(sys, "stdout", _BrokenWriter())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    try:
+        with pytest.raises(OSError, match="failed streaming Codex output"):
+            codex_high_exec_filter.main([])
+
+        assert not _process_is_running(int(child_pid_path.read_text(encoding="utf-8")))
+    finally:
+        if child_pid_path.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(child_pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+class _BrokenWriter(io.StringIO):
+    def write(self, text: str) -> int:
+        del text
+        raise OSError("broken wrapper output")
+
+
+def _process_is_running(process_id: int) -> bool:
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
