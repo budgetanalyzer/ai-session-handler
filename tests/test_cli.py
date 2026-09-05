@@ -109,6 +109,70 @@ def test_status_reports_next_phase(
     assert "latest transcript: none" in captured.out
 
 
+def test_run_and_status_resolve_plan_relative_to_nested_caller_directory(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "repository"
+    caller = workspace / "tools"
+    plan_path = workspace / "docs" / "plans" / "plan.md"
+    agent_path = workspace / "agent.py"
+    caller.mkdir(parents=True)
+    plan_path.parent.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("# Test repository\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
+    agent_path.write_text(
+        "print('<phase-complete>Subprocess complete.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    relative_plan = Path("../docs/plans/plan.md")
+    monkeypatch.chdir(caller)
+
+    run_exit_code = main(
+        [
+            "run",
+            "--plan",
+            str(relative_plan),
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+        ]
+    )
+    capsys.readouterr()
+    status_exit_code = main(["status", "--plan", str(relative_plan)])
+
+    captured = capsys.readouterr()
+    state_path = workspace / ".ai-session-handler" / "plan.json"
+    assert run_exit_code == 0
+    assert status_exit_code == 0
+    assert plan_path.resolve() == plan_path
+    assert read_state(state_path).completed_phase_ids == ("phase-1",)
+    assert "all complete" in captured.out
+    assert f"plan workspace path: {workspace}" in captured.out
+
+
+def test_status_resolves_relative_plan_in_sibling_repository_with_spaces(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    caller = tmp_path / "caller"
+    workspace = tmp_path / "target repository"
+    plan_path = workspace / "docs" / "plans" / "plan with spaces.md"
+    caller.mkdir()
+    plan_path.parent.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("# Target repository\n", encoding="utf-8")
+    plan_path.write_text(_phase(), encoding="utf-8")
+    monkeypatch.chdir(caller)
+
+    exit_code = main(["status", "--plan", "../target repository/docs/plans/plan with spaces.md"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert f"plan workspace path: {workspace}" in captured.out
+    assert f"execution workspace path: {workspace}" in captured.out
+
+
 def test_status_reports_malformed_state_json(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -149,6 +213,44 @@ def test_run_reports_malformed_config_json_with_path(
     assert captured.out == ""
     assert str(config_path) in captured.err
     assert "invalid JSON at line 1, column 2" in captured.err
+
+
+def test_invalid_command_template_returns_input_error_without_launching_worker(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    sentinel_path = tmp_path / "launched"
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))} {{}}",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_INVALID
+    assert captured.out == ""
+    assert "positional command placeholder is not allowed: {}" in captured.err
+    assert "Traceback" not in captured.err
+    assert not sentinel_path.exists()
+    assert not (tmp_path / ".ai-session-handler" / "plan.json").exists()
+    assert not (tmp_path / ".ai-session-handler" / "prompts").exists()
+    assert not (tmp_path / ".ai-session-handler" / "transcripts").exists()
 
 
 def test_run_agent_failure_reports_error_details_to_stderr(

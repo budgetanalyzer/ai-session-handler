@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 from dataclasses import replace
@@ -15,6 +16,7 @@ from ai_session_handler.runner import (
     EXIT_BLOCKED,
     EXIT_NEEDS_CLARIFICATION,
     EXIT_OK,
+    CommandTemplateError,
     RunOptions,
     render_command_template,
     run_phases,
@@ -191,6 +193,88 @@ def test_render_command_template_preserves_placeholder_paths_with_spaces() -> No
         "--run",
         "run-1",
     ]
+
+
+def test_render_command_template_preserves_quotes_inside_placeholder_values() -> None:
+    command = render_command_template(
+        "agent --prompt={prompt_file}",
+        prompt_file=Path('/tmp/my "quoted" workspace/prompt file.txt'),
+        workspace=Path('/tmp/my "quoted" workspace'),
+        run_id="run-1",
+        transcript_file=Path('/tmp/my "quoted" workspace/transcript.txt'),
+        state_file=Path('/tmp/my "quoted" workspace/state.json'),
+    )
+
+    assert command == ["agent", '--prompt=/tmp/my "quoted" workspace/prompt file.txt']
+
+
+def test_render_command_template_preserves_literal_escaped_braces() -> None:
+    command = render_command_template(
+        'agent \'--payload={{"status": "ok"}}\'',
+        prompt_file=Path("/tmp/prompt.txt"),
+        workspace=Path("/tmp/workspace"),
+        run_id="run-1",
+        transcript_file=Path("/tmp/transcript.txt"),
+        state_file=Path("/tmp/state.json"),
+    )
+
+    assert command == ["agent", '--payload={"status": "ok"}']
+
+
+@pytest.mark.parametrize(
+    ("template", "message"),
+    [
+        ("", "empty command"),
+        ("   ", "empty command"),
+        ("''", "empty command"),
+        ("agent {}", "positional command placeholder is not allowed: {}"),
+        ("agent {0}", "positional command placeholder is not allowed: {0}"),
+        ("agent {workspace.name}", "attribute and index access are not allowed"),
+        ("agent {workspace[0]}", "attribute and index access are not allowed"),
+        ("agent {workspace!r}", "conversion is not allowed"),
+        ("agent {workspace:}", "format specification is not allowed"),
+        ("agent {workspace:>20}", "format specification is not allowed"),
+        ("agent {workspace:{run_id}}", "format specification is not allowed"),
+        ("agent {unknown}", "unsupported command placeholder: {unknown}"),
+        ("agent {workspace", "invalid command template syntax"),
+        ('agent "unterminated', "invalid command template quoting"),
+    ],
+)
+def test_render_command_template_rejects_invalid_syntax(template: str, message: str) -> None:
+    with pytest.raises(CommandTemplateError, match=re.escape(message)):
+        render_command_template(
+            template,
+            prompt_file=Path("/tmp/prompt.txt"),
+            workspace=Path("/tmp/workspace"),
+            run_id="run-1",
+            transcript_file=Path("/tmp/transcript.txt"),
+            state_file=Path("/tmp/state.json"),
+        )
+
+
+def test_invalid_command_template_does_not_launch_or_mutate_state(tmp_path: Path) -> None:
+    plan_path = _write_plan(tmp_path)
+    sentinel_path = tmp_path / "launched"
+    script = _write_agent(
+        tmp_path,
+        "agent.py",
+        "from pathlib import Path\n"
+        f"Path({str(sentinel_path)!r}).touch()\n"
+        "print('<phase-complete>Unexpected.</phase-complete>')\n",
+    )
+    state_path = tmp_path / ".ai-session-handler" / "plan.json"
+    state_path.parent.mkdir()
+    original_state = b'{"existing": true}\n'
+    state_path.write_bytes(original_state)
+    options = _options(tmp_path, plan_path, script)
+
+    with pytest.raises(CommandTemplateError, match="positional command placeholder"):
+        run_phases(replace(options, agent_cmd=f"{options.agent_cmd} {{}}"))
+
+    assert not sentinel_path.exists()
+    assert state_path.read_bytes() == original_state
+    assert not (state_path.parent / "prompts").exists()
+    assert not (state_path.parent / "transcripts").exists()
 
 
 def test_run_preserves_prompt_file_placeholder_with_workspace_spaces(tmp_path: Path) -> None:

@@ -113,6 +113,7 @@ def run_phases(options: RunOptions) -> RunnerOutcome:
     ):
         raise ValueError("timeout_seconds must be a finite number greater than 0")
     stop_patterns = _compile_stop_patterns(options.stop_on_regex)
+    _parse_command_template(options.agent_cmd)
 
     phases = parse_phase_file(options.plan_path)
     state = read_state(options.state_path)
@@ -356,17 +357,7 @@ def render_command_template(
     state_file: Path,
 ) -> list[str]:
     """Substitute supported placeholders and split the command without a shell."""
-    formatter = string.Formatter()
-    fields = [
-        field_name
-        for _, field_name, _, _ in formatter.parse(template)
-        if field_name is not None and field_name != ""
-    ]
-    unsupported = sorted(set(fields) - _SUPPORTED_PLACEHOLDERS)
-    if unsupported:
-        joined = ", ".join(unsupported)
-        raise CommandTemplateError(f"unsupported command placeholder(s): {joined}")
-
+    template_args = _parse_command_template(template)
     substitutions = {
         "prompt_file": str(prompt_file),
         "workspace": str(workspace),
@@ -374,15 +365,84 @@ def render_command_template(
         "transcript_file": str(transcript_file),
         "state_file": str(state_file),
     }
+    return [argument.format_map(substitutions) for argument in template_args]
+
+
+def _parse_command_template(template: str) -> list[str]:
     try:
         template_args = shlex.split(template)
     except ValueError as error:
         raise CommandTemplateError(f"invalid command template quoting: {error}") from error
 
-    command = [argument.format(**substitutions) for argument in template_args]
-    if not command:
+    if not template_args or template_args[0] == "":
         raise CommandTemplateError("agent command template produced an empty command")
-    return command
+
+    formatter = string.Formatter()
+    for argument in template_args:
+        try:
+            fields = tuple(formatter.parse(argument))
+        except ValueError as error:
+            raise CommandTemplateError(f"invalid command template syntax: {error}") from error
+
+        parsed_fields = (
+            (field_name, format_spec, conversion)
+            for _, field_name, format_spec, conversion in fields
+            if field_name is not None
+        )
+        raw_fields = _replacement_fields(argument)
+        for (field_name, format_spec, conversion), raw_field in zip(
+            parsed_fields, raw_fields, strict=True
+        ):
+            placeholder = f"{{{raw_field}}}"
+            if field_name == "" or field_name.isdecimal():
+                raise CommandTemplateError(
+                    f"positional command placeholder is not allowed: {placeholder}"
+                )
+            if "." in field_name or "[" in field_name or "]" in field_name:
+                raise CommandTemplateError(
+                    "attribute and index access are not allowed in command placeholder: "
+                    f"{placeholder}"
+                )
+            if field_name not in _SUPPORTED_PLACEHOLDERS:
+                raise CommandTemplateError(f"unsupported command placeholder: {placeholder}")
+            if conversion is not None:
+                raise CommandTemplateError(
+                    f"conversion is not allowed in command placeholder: {placeholder}"
+                )
+            if format_spec or ":" in raw_field:
+                raise CommandTemplateError(
+                    f"format specification is not allowed in command placeholder: {placeholder}"
+                )
+
+    return template_args
+
+
+def _replacement_fields(argument: str) -> list[str]:
+    fields: list[str] = []
+    index = 0
+    while index < len(argument):
+        if argument[index] != "{":
+            index += 1
+            continue
+        if index + 1 < len(argument) and argument[index + 1] == "{":
+            index += 2
+            continue
+
+        start = index + 1
+        index = start
+        nested_braces = 0
+        while index < len(argument):
+            if argument[index] == "{":
+                nested_braces += 1
+            elif argument[index] == "}":
+                if nested_braces == 0:
+                    fields.append(argument[start:index])
+                    index += 1
+                    break
+                nested_braces -= 1
+            index += 1
+
+    return fields
 
 
 def apply_process_result(

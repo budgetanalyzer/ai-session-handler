@@ -119,8 +119,11 @@ def _add_plan_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    plan_workspace_path = _infer_plan_workspace_from_plan(args.plan)
-    plan_path = _resolve_path(plan_workspace_path, args.plan)
+    try:
+        plan_path, plan_workspace_path = _resolve_plan_and_workspace(args.plan)
+    except OSError as error:
+        _print_error(str(error))
+        return EXIT_INVALID
     state_path = default_state_path(plan_workspace_path, plan_path)
     config_path = default_config_path(plan_workspace_path)
 
@@ -167,8 +170,11 @@ def _run_command(args: argparse.Namespace) -> int:
 
 
 def _status_command(args: argparse.Namespace) -> int:
-    plan_workspace_path = _infer_plan_workspace_from_plan(args.plan)
-    plan_path = _resolve_path(plan_workspace_path, args.plan)
+    try:
+        plan_path, plan_workspace_path = _resolve_plan_and_workspace(args.plan)
+    except OSError as error:
+        _print_error(str(error))
+        return EXIT_INVALID
     state_path = default_state_path(plan_workspace_path, plan_path)
 
     try:
@@ -328,9 +334,8 @@ def _has_no_transcript_body(lines: Sequence[str]) -> bool:
     return all(line.strip() == "" for line in lines[header_end + 1 :])
 
 
-def _infer_plan_workspace_from_plan(plan_path: Path) -> Path:
-    unresolved_plan = plan_path if plan_path.is_absolute() else Path.cwd() / plan_path
-    resolved_plan = unresolved_plan.resolve()
+def _resolve_plan_and_workspace(plan_path: Path) -> tuple[Path, Path]:
+    resolved_plan = plan_path.resolve()
     markers = (
         Path(".ai-session-handler"),
         Path(".git"),
@@ -338,15 +343,9 @@ def _infer_plan_workspace_from_plan(plan_path: Path) -> Path:
     )
     for parent in (resolved_plan.parent, *resolved_plan.parents):
         if any((parent / marker).exists() for marker in markers):
-            return parent
+            return resolved_plan, parent
 
-    if plan_path.is_absolute():
-        return resolved_plan.parent
-    return Path.cwd().resolve()
-
-
-def _resolve_path(plan_workspace_path: Path, path: Path) -> Path:
-    return path if path.is_absolute() else plan_workspace_path / path
+    return resolved_plan, resolved_plan.parent
 
 
 def _phase_by_id(phases: Sequence[Phase], phase_id: str) -> Phase:

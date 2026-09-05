@@ -59,10 +59,11 @@ process for each one, until the plan completes or a phase stops. Set
 integer to cap the phases executed in one invocation.
 
 `--agent-cmd` is a command template, not a shell script. The plan path determines
-the plan workspace: `run` and `status` walk up from `--plan` to the nearest
-`.ai-session-handler`, `.git`, or `AGENTS.md` marker. A full path to a plan in
-another repository therefore uses that repository's config, state, prompts, and
-transcripts.
+the plan workspace: `run` and `status` first resolve `--plan` against the caller's
+current directory, then walk up from that canonical path to the nearest
+`.ai-session-handler`, `.git`, or `AGENTS.md` marker. Absolute paths and relative
+paths from repository subdirectories or sibling repositories therefore use the
+config, state, prompts, and transcripts belonging to the supplied plan.
 
 Each phase declares its own execution workspace relative to the plan workspace.
 The runner requires that directory to exist and contain an `AGENTS.md` at its
@@ -75,6 +76,22 @@ paths for shared tools. Supported placeholders are:
 - `{run_id}`
 - `{transcript_file}`
 - `{state_file}`
+
+Only those exact named fields are supported. Positional fields, attribute or
+index access, conversions, and format specifications are rejected before state
+is changed or a worker starts. The template is split into arguments before
+placeholder values are substituted, so a path containing spaces or quotes stays
+within its original argument. Use doubled braces for a literal brace, for
+example:
+
+```bash
+.venv/bin/ai-session-handler run \
+  --plan docs/plans/plan-22.md \
+  --agent-cmd "./scripts/run-agent --metadata '{{\"mode\":\"fresh\"}}' --prompt={prompt_file}"
+```
+
+Malformed quoting, an empty command, or invalid placeholder syntax is an input
+error with exit code 5.
 
 Config is always read from `.ai-session-handler/config.json` in the inferred plan
 workspace. Runner state is always stored as `.ai-session-handler/<plan-stem>.json`
@@ -137,6 +154,18 @@ Run against another repository by passing the full plan path:
 .venv/bin/ai-session-handler run \
   --plan /workspace/my-project/docs/plans/plan-22.md
 ```
+
+Relative paths are interpreted from the directory where the command is run.
+For example, from `/workspace/my-project/tools`, address a plan in that
+repository with:
+
+```bash
+/workspace/ai-session-handler/.venv/bin/ai-session-handler status \
+  --plan ../docs/plans/plan-22.md
+```
+
+From `/workspace/my-project`, a sibling repository can be addressed with
+`--plan ../other-project/docs/plans/plan-22.md`.
 
 Run without echoing agent progress while retaining the durable transcript:
 
