@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -83,7 +84,11 @@ def test_state_round_trips_through_stable_json(tmp_path: Path) -> None:
     write_state(state_path, state)
 
     assert read_state(state_path) == state
-    assert state_path.read_text(encoding="utf-8").endswith("\n")
+    state_text = state_path.read_text(encoding="utf-8")
+    raw_state: object = json.loads(state_text)
+    assert isinstance(raw_state, dict)
+    assert state_text.endswith("\n")
+    assert "schema_version" not in raw_state
 
 
 def test_active_attempt_round_trips_with_process_identity(tmp_path: Path) -> None:
@@ -152,23 +157,42 @@ def test_active_attempt_snapshot_must_match_accepted_plan(tmp_path: Path) -> Non
         write_state(state_path, state)
 
 
-def test_schema_one_state_reports_manual_transition_document(tmp_path: Path) -> None:
+def test_state_rejects_unexpected_top_level_key(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
-    state_path.write_text('{"schema_version": 1}\n', encoding="utf-8")
+    state_path.write_text(
+        '{"plan": null, "completed_phase_ids": [], "current_phase": null, '
+        '"active_attempt": null, "stop": null, "last_run": null, "obsolete": 1}\n',
+        encoding="utf-8",
+    )
 
-    with pytest.raises(StateError, match=r"manual transition.*docs/state-and-recovery\.md"):
+    with pytest.raises(StateError, match=r"state\.json: unexpected key obsolete"):
         read_state(state_path)
 
 
-def test_schema_two_state_requires_explicit_active_attempt_key(tmp_path: Path) -> None:
+def test_state_requires_explicit_active_attempt_key(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
-        '{"schema_version": 2, "plan": null, "completed_phase_ids": [], '
+        '{"plan": null, "completed_phase_ids": [], '
         '"current_phase": null, "stop": null, "last_run": null}\n',
         encoding="utf-8",
     )
 
     with pytest.raises(StateError, match="missing required key active_attempt"):
+        read_state(state_path)
+
+
+def test_state_rejects_unexpected_nested_key(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"plan": {"path": "/workspace/plan.md", "sha256": "'
+        + "a" * 64
+        + '", "accepted_at": "2026-07-05T12:00:00Z", "obsolete": true}, '
+        '"completed_phase_ids": [], "current_phase": null, "active_attempt": null, '
+        '"stop": null, "last_run": null}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StateError, match=r"state\.json: unexpected key plan\.obsolete"):
         read_state(state_path)
 
 

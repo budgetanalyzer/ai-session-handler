@@ -98,7 +98,7 @@ def write_worker_prompt(generated_dir: Path, context: PromptContext) -> Path:
 
 def summarize_previous_state(state: RunnerState) -> str:
     """Render a deterministic summary of durable state for the worker prompt."""
-    lines = [f"schema_version: {state.schema_version}"]
+    lines: list[str] = []
 
     if state.plan is None:
         lines.append("plan: none")

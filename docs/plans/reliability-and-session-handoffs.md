@@ -45,9 +45,12 @@ it does not mean the user has reviewed or accepted the resulting implementation.
 - Keep optional provider configuration outside core logic. Do not edit `/usr/local/bin/codex-lean`
   or another repository in this plan. Document that fresh sessions and restricted tool access
   are separate decisions.
-- Existing generated history must not be deleted, silently reassigned, or silently ignored.
-  Use an explicit, documented manual transition for legacy layout/schema data; do not build a
-  general migration subsystem. Fresh installations must work without migration steps.
+- Treat plan execution and its generated state as release-scoped. Finish a partially executed plan
+  with the AI Session Handler release that created its state; use upgraded releases for new plans
+  with fresh generated state.
+- Do not add schema-version fields, migrations, legacy-layout detection, compatibility readers,
+  format translation, or fallback behavior for plans, state, outcome records, or other generated
+  artifacts. Validate only the current format and report invalid files or keys directly.
 
 ## Validation discipline
 
@@ -165,7 +168,7 @@ an executable phase and an edited second phase running with stale instructions.
 
 The runner does not continuously watch files. A change during a worker's execution is detected
 at the next checkpoint; the completed worker's outcome refers to the original snapshot.
-Global preamble capture prepares Phase 8 without copying later phases into worker prompts.
+Global preamble capture prepares Phase 9 without copying later phases into worker prompts.
 
 ### Validation
 
@@ -402,7 +405,77 @@ refusal, read-only status, explicit retry after cleanup, and retained clarificat
 An interrupted attempt retains enough information for inspection and cannot be silently rerun
 as untouched work. Normal outcomes and recovery transitions remain typed and durably recorded.
 
-## Phase 7: Require an unambiguous final worker result
+## Phase 7: Remove schema versioning and backward-compatibility paths
+
+### Workspace
+
+.
+
+### Goal
+
+Keep plans and generated state release-scoped instead of maintaining upgrade compatibility.
+
+### Scope
+
+State JSON, generated-layout boundaries, CLI integration, prompt state summaries, compatibility
+tests, README, and state/recovery documentation.
+
+### Non-goals
+
+Changing active-attempt safety, redesigning the current keyed layout, deleting old generated
+files, or supporting in-place upgrades of partially executed plans.
+
+### Required context
+
+Read `config.py`, `state.py`, `cli.py`, `prompts.py`, their tests, README, and
+`docs/state-and-recovery.md`. Inspect the completed Phase 3 legacy-layout handling and Phase 6
+schema-version handling. This phase intentionally supersedes the backward-compatibility and manual
+transition requirements in those completed phases while preserving their current-layout and
+interruption-safety behavior.
+
+### Execution steps
+
+1. Remove `SCHEMA_VERSION`, `RunnerState.schema_version`, the persisted `schema_version` key, and
+   version-specific load/validation branches. Validate the current state object directly, including
+   its exact allowed keys and required relationships, so obsolete or unexpected shapes fail as
+   invalid current data rather than being classified or converted by version.
+2. Remove legacy stem-based state discovery, the `config.md` legacy-state collision heuristic,
+   transition-only exceptions, CLI checks, and their compatibility tests. Use only the current
+   keyed plan directory. Do not search for, move, rewrite, or delete generated files from an older
+   release.
+3. Remove schema/version details from worker state summaries and fixtures. Keep the operational
+   state needed for fresh-session handoff, active-attempt recovery, and current plan selection.
+4. Replace schema and legacy-transition documentation with the release-scoped rule: finish a
+   partially executed plan using the same handler release that created its state; after upgrading,
+   begin new work with fresh generated state. State plainly that the runner provides no migration,
+   compatibility reader, or supported mixed-release workflow.
+5. Audit source, tests, active docs, and the remaining phases of this plan for version fields,
+   migrations, legacy detection, format translation, and compatibility fallbacks. Remove them,
+   including any planned version field on outcome records, while retaining specific current-format
+   validation errors.
+
+### Implementation notes
+
+Release-scoped data is an operational constraint, not an invitation to erase history. Existing
+files remain user-owned evidence and may be archived manually, but the current release neither
+interprets nor transitions them. Do not replace version checks with shape guessing or aliases for
+old field names. Package `--version` output is unrelated and remains supported.
+
+### Validation
+
+Run `.venv/bin/python -m pytest tests/test_state.py tests/test_cli.py tests/test_runner.py
+tests/test_prompts.py` as one command. Assert newly written state has no schema/version field,
+current-format state round-trips, unknown or malformed keys fail with path/key diagnostics, and no
+legacy-layout probe affects `run`, `status`, or `config.md`. Search active source and documentation
+for removed compatibility concepts and inspect every remaining match.
+
+### Completion criteria
+
+The runner persists and reads one current state shape without schema versions or compatibility
+paths. Active-attempt recovery remains intact, and active documentation tells users to keep
+partially executed plans and their state on the release that created them.
+
+## Phase 8: Require an unambiguous final worker result
 
 ### Workspace
 
@@ -456,7 +529,7 @@ stderr diagnostics, and all three legitimate outcomes.
 The reproduced fixture cannot complete a phase. Normalized final results work, ambiguous output
 fails closed, and no new automated review or approval mechanism is introduced.
 
-## Phase 8: Carry global intent and durable handoffs into fresh sessions
+## Phase 9: Carry global intent and durable handoffs into fresh sessions
 
 ### Workspace
 
@@ -477,7 +550,7 @@ LLM-generated compaction, a memory service, replaying complete transcripts, or w
 ### Required context
 
 Read the snapshot type from Phase 2, layout from Phase 3, state transitions from Phase 6, and
-protocol from Phase 7. The existing prompt omits the plan introduction and automatically includes
+protocol from Phase 8. The existing prompt omits the plan introduction and automatically includes
 only the most recent free-form worker summary.
 
 ### Execution steps
@@ -488,10 +561,10 @@ only the most recent free-form worker summary.
 2. Ask the terminal summary to name changed artifacts, validation commands and results, decisions,
    remaining limitations, and relevant handoff references. Retain plain text as the outcome body;
    do not add brittle parsing of headings inside the summary.
-3. Persist a versioned, runner-owned outcome JSON record per attempt in its plan directory,
-   including plan/phase identity, status, summary, timestamps, and artifact paths. Link committed
-   outcomes from state; write the record before advancing state and never adopt an unreferenced
-   record as proof of success after a crash.
+3. Persist a runner-owned outcome JSON record per attempt in its plan directory, using only the
+   current unversioned format and including plan/phase identity, status, summary, timestamps, and
+   artifact paths. Link committed outcomes from state; write the record before advancing state and
+   never adopt an unreferenced record as proof of success after a crash.
 4. Include the latest relevant summary and a compact index of earlier committed outcome paths in
    prompts. Instruct workers to read relevant prior decisions and store durable design context
    in the ordinary repository documentation when required by their phase.
@@ -516,7 +589,7 @@ state writes. Verify context availability and conservative recovery without tran
 Every phase receives global intent, earlier handoffs remain reachable after later phases, and
 history stays runner-owned and cannot imply success before the state transition commits.
 
-## Phase 9: Keep output processing responsive under verbose workers
+## Phase 10: Keep output processing responsive under verbose workers
 
 ### Workspace
 
@@ -536,7 +609,7 @@ A regex engine, transcript truncation, new output-limit configuration, or changi
 
 ### Required context
 
-Read output handling in `runner.py` and the framing/filter contract from Phase 7. The original
+Read output handling in `runner.py` and the framing/filter contract from Phase 8. The original
 implementation uses an unbounded queue, reads whole lines, and repeatedly scans accumulated
 output even when no new output has arrived.
 
@@ -546,7 +619,7 @@ output even when no new output has arrived.
    if consumers fail while the queue is full. Preserve incremental UTF-8 decoding and stream id.
 2. Bound work drained per loop iteration so a constantly verbose process cannot postpone timeout
    and stop handling indefinitely. Flush final captured output before outcome validation.
-3. Track marker framing incrementally with the Phase 7 rules and use transcripts as the durable
+3. Track marker framing incrementally with the Phase 8 rules and use transcripts as the durable
    log. Avoid retaining the complete diagnostic output in the ordinary no-regex path solely for
    marker parsing; keep only the protocol state and result text needed for validation.
 4. Evaluate stop regexes only after new output and after the final drain. Preserve full-history
@@ -571,7 +644,7 @@ chunk, and a noisy worker that must still time out. Assert transcript completene
 Output floods do not starve lifecycle handling, ordinary diagnostics are not duplicated forever
 in memory, and regex/transcript behavior remains documented and regression-tested.
 
-## Phase 10: Align planning guidance, architecture docs, and repository hygiene
+## Phase 11: Align planning guidance, architecture docs, and repository hygiene
 
 ### Workspace
 
@@ -593,7 +666,7 @@ adding dependencies, or adding final-review enforcement to the runner.
 
 ### Required context
 
-Read the completed implementation and docs from Phases 1–9 and the historical architecture
+Read the completed implementation and docs from Phases 1–10 and the historical architecture
 conversation. Read the AGENTS.md checkstyle before editing agent instructions. If documenting
 current Codex behavior, apply the OpenAI Docs skill and verify current official sources.
 
@@ -633,7 +706,7 @@ Confirm no example instructs executing this implementation plan with the handler
 Active documentation agrees with behavior and user-owned final acceptance. Historical material
 is clearly labeled, and fresh-session guidance makes no unsupported performance guarantees.
 
-## Phase 11: Verify the integrated workflow and prepare the user's final review
+## Phase 12: Verify the integrated workflow and prepare the user's final review
 
 ### Workspace
 
@@ -667,9 +740,10 @@ phases. Revisit all review reproductions and verify each has an owning regressio
    the integrated path; add only missing acceptance coverage.
 3. Run the complete quality gates and inspect the final diff for scope, documentation accuracy,
    accidental runtime dependencies, generated artifacts, and changes outside this workspace.
-4. Provide the user with a review handoff listing behavior changes, test evidence, legacy-state
-   transition instructions, remaining limitations, and any decisions requiring attention. The user
-   reviews the implementation and determines acceptance; do not declare user approval on their behalf.
+4. Provide the user with a review handoff listing behavior changes, test evidence, the
+   release-scoped plan/state constraint, remaining limitations, and any decisions requiring
+   attention. The user reviews the implementation and determines acceptance; do not declare user
+   approval on their behalf.
 
 ### Implementation notes
 
@@ -687,7 +761,8 @@ work once the scoped changes and evidence are ready for the user.
 ```
 
 Also verify the installed console scripts with fake workers, a clean temporary workspace without
-config, and representative legacy-state fixtures. Confirm process tests leave no live workers.
+config, and representative malformed current-state fixtures. Confirm process tests leave no live
+workers.
 
 ### Completion criteria
 

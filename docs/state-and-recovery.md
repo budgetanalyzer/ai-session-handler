@@ -24,16 +24,16 @@ Attempt ids retain a UTC timestamp and phase id for operators and include a UUID
 Prompt and transcript files are created exclusively. If an artifact with the selected attempt id
 already exists, the runner stops instead of truncating or replacing it.
 
-## Schema 2 Attempt Lifecycle
+## Attempt Lifecycle
 
-Schema 2 distinguishes work that has never started from an attempt whose terminal outcome was not
-durably recorded. Before creating attempt artifacts or launching a worker, the runner atomically
-records `active_attempt` with status `prepared`. That record contains the attempt and phase ids,
-the accepted plan path and SHA-256 snapshot, execution workspace, start time, and absolute prompt
-and transcript paths. Immediately after launch it replaces that record with status `running` and,
-when Linux process metadata is readable, records the PID, process-group id, boot id, and process
-start time. The boot id and start time prevent a later retry from treating an unrelated process
-that reused the numeric PID as the old worker.
+Current state distinguishes work that has never started from an attempt whose terminal outcome was
+not durably recorded. Before creating attempt artifacts or launching a worker, the runner
+atomically records `active_attempt` with status `prepared`. That record contains the attempt and
+phase ids, the accepted plan path and SHA-256 snapshot, execution workspace, start time, and
+absolute prompt and transcript paths. Immediately after launch it replaces that record with status
+`running` and, when Linux process metadata is readable, records the PID, process-group id, boot id,
+and process start time. The boot id and start time prevent a later retry from treating an unrelated
+process that reused the numeric PID as the old worker.
 
 A terminal transition atomically clears `active_attempt` and records `last_run`. Completion also
 adds the phase id to `completed_phase_ids` and clears `current_phase`. Blocked, clarification, agent
@@ -111,82 +111,23 @@ This is lifecycle management, not an OS sandbox. It cannot guarantee cleanup if 
 killed with SIGKILL, the container or kernel stops abruptly, or a descendant deliberately
 daemonizes into another session/process group. It also cannot make partial workspace edits
 exactly-once. After an abrupt interruption, inspect the workspace and process table before any
-manual retry; the schema 2 active attempt makes that inspection and explicit retry mandatory.
+manual retry; the active attempt makes that inspection and explicit retry mandatory.
 
-## Manual Schema 1 to Schema 2 Transition
+## Release-Scoped Generated Data
 
-There is no automatic schema migration. Schema 1 could contain `current_phase` after a worker had
-started but did not retain enough attempt or process identity to determine whether that work was
-untouched, partially applied, or complete. Changing only `schema_version` would make an unsafe
-state appear valid.
+Plans and their generated state are release-scoped. Finish a partially executed plan with the same
+AI Session Handler release that created its state. After upgrading the handler, begin new work with
+fresh generated state instead of continuing an existing execution.
 
-To convert an existing keyed `state.json`:
+The runner reads and writes only its current state and artifact formats. It provides no migration,
+compatibility reader, or supported mixed-release workflow. A state object with missing,
+unexpected, or malformed keys is reported as invalid current data; the runner does not classify or
+translate it. Generated files outside the current keyed plan directory are not searched for,
+interpreted, moved, rewritten, or deleted.
 
-1. Stop all handler and worker processes for the plan and back up its complete keyed history
-   directory, including state, prompts, and transcripts.
-2. Verify the stored `plan.path` is the intended canonical absolute plan path and its stored
-   `plan.sha256` matches the accepted snapshot. Preserve the plan record, completed phase ids, and
-   all timestamps exactly.
-3. Add `"active_attempt": null`. If schema 1 has a `current_phase` but no `stop`, do not clear it:
-   add a stop with `reason` set to `interrupted`, the same `phase_id`, a message explaining that the
-   legacy attempt outcome is unknown, and a null `clarification_request`. Inspect the workspace and
-   artifacts before eventually using `--retry-stopped`.
-4. Preserve an existing stop exactly, including its message or clarification request. Confirm its
-   phase id matches `current_phase` and is not listed as completed.
-5. Preserve `last_run`, but change its `status` only if necessary to one of the documented typed
-   values. Add `execution_workspace` from the corresponding phase/transcript header and add the
-   absolute prompt path under this plan's `prompts/` directory. Convert `transcript_path` to its
-   absolute path. Both artifact filenames must be `<last_run.run_id>.txt`; do not invent or move a
-   reference without checking the artifact.
-6. Set `schema_version` to `2`, write valid JSON to a separate file, then atomically replace
-   `state.json`. Run `status --plan PATH` and resolve every named key error before attempting a
-   retry.
-
-If a schema 1 field or artifact cannot be assigned confidently, keep the backup and make an
-explicit archive/fresh-start decision. Do not infer completion or fabricate an active process
-identity. A schema 1 `current_phase` without a stop must always be carried as an interrupted stop,
-even when no matching artifact can be found.
-
-## Legacy Stem-Based Layout
-
-Earlier versions stored plan state at `.ai-session-handler/<plan-stem>.json` and mixed all prompts
-and transcripts in workspace-level `prompts/` and `transcripts/` directories. `run` and `status`
-detect that state before creating keyed history and return an input error with the expected new
-state path. They do not modify the legacy file or artifacts.
-
-A plan named `config.md` previously mapped its state to `.ai-session-handler/config.json`, which is
-also the current shared configuration path. A JSON object containing the legacy state
-`schema_version` is diagnosed as legacy state, not accepted as an empty/default configuration. A
-normal handler configuration at that path remains valid.
-
-There is intentionally no automatic migration because equal stems may have combined artifacts
-from different plans. To carry legacy history forward:
-
-1. Stop all handler and worker processes for the workspace.
-2. Back up the entire `.ai-session-handler/` directory before moving or editing anything.
-3. Read the legacy state's `plan.path` and verify it is the canonical absolute path of the intended
-   plan. Independently compare its stored `plan.sha256` with the intended plan bytes. Resolve any
-   mismatch before assigning history.
-4. Use the destination printed by the transition error, or obtain it with the repository-local
-   environment:
-
-   ```bash
-   .venv/bin/python -c 'from pathlib import Path; from ai_session_handler.config import default_state_path; workspace = Path(".").resolve(); plan = Path("docs/plans/PLAN.md").resolve(); print(default_state_path(workspace, plan))'
-   ```
-
-5. Create the destination plan directory and move the verified legacy state to its `state.json`.
-6. Inspect legacy prompt contents and transcript headers for their canonical `plan_path` or `plan`
-   field. Move only artifacts proven to belong to this plan into the destination `prompts/` and
-   `transcripts/` directories. Never overwrite a name collision; retain unassigned or ambiguous
-   artifacts with the backup for manual review.
-7. If the latest transcript moved, update `last_run.transcript_path` in the relocated state to its
-   new absolute path while preserving the existing schema and other fields.
-8. For the `config.md` collision, create a normal shared `config.json` after moving the state away.
-9. Run `status --plan PATH` and inspect the reported state path, accepted plan identity, next or
-   stopped phase, and latest transcript before retrying work.
-
-If the legacy `schema_version` is unsupported, archive it and make an explicit fresh-start or
-manual-conversion decision rather than changing the version number alone.
+Existing generated files remain user-owned execution evidence. They may be retained or archived
+manually, but they are not inputs to the current release unless they were created by that release
+at the current keyed paths.
 
 ## Renamed or Relocated Plans
 

@@ -14,7 +14,6 @@ from ai_session_handler.config import (
     ConfigError,
     default_config_path,
     default_state_path,
-    ensure_no_legacy_state,
     read_config,
     write_example_config,
 )
@@ -132,7 +131,6 @@ def _run_command(args: argparse.Namespace) -> int:
     config_path = default_config_path(plan_workspace_path)
 
     try:
-        ensure_no_legacy_state(plan_workspace_path, plan_path)
         config = read_config(config_path)
         agent_cmd = args.agent_cmd or config.agent_cmd
         if agent_cmd is None:
@@ -190,7 +188,6 @@ def _status_command(args: argparse.Namespace) -> int:
     state_path = default_state_path(plan_workspace_path, plan_path)
 
     try:
-        ensure_no_legacy_state(plan_workspace_path, plan_path)
         state = read_state(state_path)
     except (ConfigError, OSError, StateError) as error:
         _print_error(str(error))

@@ -10,11 +10,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Final
 
 from ai_session_handler.phases import Phase, PlanSnapshot
-
-SCHEMA_VERSION: Final[int] = 2
 
 
 class ActiveAttemptStatus(StrEnum):
@@ -135,7 +132,6 @@ class LastRun:
 class RunnerState:
     """Durable state for one plan file."""
 
-    schema_version: int = SCHEMA_VERSION
     plan: PlanRecord | None = None
     completed_phase_ids: tuple[str, ...] = ()
     current_phase: PhaseRef | None = None
@@ -217,17 +213,22 @@ def read_state(path: Path) -> RunnerState:
         raise StateError(
             f"{path}: invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
         ) from error
-    data = _expect_mapping(raw, source=str(path), key="$")
-    schema_version = _int_at(data, "schema_version", source=str(path))
-    if schema_version != SCHEMA_VERSION:
-        if schema_version == 1:
-            raise StateError(
-                f"{path}: unsupported schema_version 1; schema 1 requires the manual "
-                "transition documented in docs/state-and-recovery.md"
-            )
-        raise StateError(f"{path}: unsupported schema_version {schema_version}")
+    data = _expect_mapping(
+        raw,
+        source=str(path),
+        key="$",
+        allowed_keys=frozenset(
+            {
+                "plan",
+                "completed_phase_ids",
+                "current_phase",
+                "active_attempt",
+                "stop",
+                "last_run",
+            }
+        ),
+    )
     state = RunnerState(
-        schema_version=schema_version,
         plan=_plan_record_from_json(
             _value_at(data, "plan", source=str(path)), source=str(path), key="plan"
         ),
@@ -386,8 +387,6 @@ def format_utc_timestamp(value: datetime | None = None) -> str:
 
 def _validate_state(state: RunnerState, path: Path) -> None:
     source = str(path)
-    if state.schema_version != SCHEMA_VERSION:
-        raise StateError(f"{source}: expected schema_version {SCHEMA_VERSION}")
     if len(set(state.completed_phase_ids)) != len(state.completed_phase_ids):
         raise StateError(f"{source}: completed_phase_ids contains duplicates")
     if any(not phase_id for phase_id in state.completed_phase_ids):
@@ -551,7 +550,6 @@ def _validate_timestamp(value: str, *, source: str, key: str) -> None:
 
 def _state_to_json(state: RunnerState) -> Mapping[str, object]:
     return {
-        "schema_version": state.schema_version,
         "plan": _plan_record_to_json(state.plan),
         "completed_phase_ids": list(state.completed_phase_ids),
         "current_phase": _phase_ref_to_json(state.current_phase),
@@ -619,7 +617,12 @@ def _active_attempt_to_json(value: ActiveAttempt | None) -> Mapping[str, object]
 def _plan_record_from_json(value: object, *, source: str, key: str) -> PlanRecord | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset({"path", "sha256", "accepted_at"}),
+    )
     return PlanRecord(
         path=_string_at(data, "path", source=source),
         sha256=_string_at(data, "sha256", source=source),
@@ -630,7 +633,12 @@ def _plan_record_from_json(value: object, *, source: str, key: str) -> PlanRecor
 def _phase_ref_from_json(value: object, *, source: str, key: str) -> PhaseRef | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset({"id", "title"}),
+    )
     return PhaseRef(
         id=_string_at(data, "id", source=source),
         title=_string_at(data, "title", source=source),
@@ -647,9 +655,29 @@ def _required_phase_ref_from_json(value: object, *, source: str, key: str) -> Ph
 def _active_attempt_from_json(value: object, *, source: str, key: str) -> ActiveAttempt | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset(
+            {
+                "id",
+                "status",
+                "phase",
+                "snapshot",
+                "execution_workspace",
+                "started_at",
+                "prompt_path",
+                "transcript_path",
+                "process",
+            }
+        ),
+    )
     snapshot = _expect_mapping(
-        _value_at(data, "snapshot", source=source), source=source, key=f"{key}.snapshot"
+        _value_at(data, "snapshot", source=source),
+        source=source,
+        key=f"{key}.snapshot",
+        allowed_keys=frozenset({"path", "sha256"}),
     )
     return ActiveAttempt(
         id=_string_at(data, "id", source=source),
@@ -674,7 +702,12 @@ def _active_attempt_from_json(value: object, *, source: str, key: str) -> Active
 def _process_identity_from_json(value: object, *, source: str, key: str) -> ProcessIdentity | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset({"pid", "process_group_id", "boot_id", "start_time_ticks"}),
+    )
     return ProcessIdentity(
         pid=_positive_int_at(data, "pid", source=source),
         process_group_id=_positive_int_at(data, "process_group_id", source=source),
@@ -686,7 +719,12 @@ def _process_identity_from_json(value: object, *, source: str, key: str) -> Proc
 def _stop_state_from_json(value: object, *, source: str, key: str) -> StopState | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset({"reason", "phase_id", "message", "clarification_request"}),
+    )
     return StopState(
         reason=_enum_at(data, "reason", StopReason, source=source),
         phase_id=_string_at(data, "phase_id", source=source),
@@ -698,7 +736,25 @@ def _stop_state_from_json(value: object, *, source: str, key: str) -> StopState 
 def _last_run_from_json(value: object, *, source: str, key: str) -> LastRun | None:
     if value is None:
         return None
-    data = _expect_mapping(value, source=source, key=key)
+    data = _expect_mapping(
+        value,
+        source=source,
+        key=key,
+        allowed_keys=frozenset(
+            {
+                "run_id",
+                "phase_id",
+                "status",
+                "started_at",
+                "finished_at",
+                "exit_code",
+                "execution_workspace",
+                "prompt_path",
+                "transcript_path",
+                "summary",
+            }
+        ),
+    )
     return LastRun(
         run_id=_string_at(data, "run_id", source=source),
         phase_id=_string_at(data, "phase_id", source=source),
@@ -713,7 +769,13 @@ def _last_run_from_json(value: object, *, source: str, key: str) -> LastRun | No
     )
 
 
-def _expect_mapping(value: object, *, source: str, key: str) -> Mapping[str, object]:
+def _expect_mapping(
+    value: object,
+    *,
+    source: str,
+    key: str,
+    allowed_keys: frozenset[str],
+) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise StateError(f"{source}: expected {key} to be an object")
     result: dict[str, object] = {}
@@ -721,6 +783,11 @@ def _expect_mapping(value: object, *, source: str, key: str) -> Mapping[str, obj
         if not isinstance(raw_key, str):
             raise StateError(f"{source}: expected {key} object keys to be strings")
         result[raw_key] = raw_value
+    unexpected_keys = sorted(result.keys() - allowed_keys)
+    if unexpected_keys:
+        unexpected_key = unexpected_keys[0]
+        qualified_key = unexpected_key if key == "$" else f"{key}.{unexpected_key}"
+        raise StateError(f"{source}: unexpected key {qualified_key}")
     return result
 
 

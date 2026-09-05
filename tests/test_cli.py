@@ -615,29 +615,63 @@ def test_same_stem_same_content_plans_keep_separate_history(
     assert len(list((plan_generated_path(tmp_path, second_plan) / "prompts").glob("*.txt"))) == 1
 
 
-def test_status_rejects_legacy_state_without_modifying_it(
+def test_status_ignores_state_outside_current_keyed_layout(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     plan_path = tmp_path / "plan.md"
     plan_path.write_text(_phase(), encoding="utf-8")
-    legacy_path = tmp_path / ".ai-session-handler" / "plan.json"
-    write_state(legacy_path, RunnerState())
-    original = legacy_path.read_bytes()
+    unrelated_path = tmp_path / ".ai-session-handler" / "plan.json"
+    write_state(unrelated_path, RunnerState(completed_phase_ids=("phase-1",)))
+    original = unrelated_path.read_bytes()
     monkeypatch.chdir(tmp_path)
 
     exit_code = main(["status", "--plan", "plan.md"])
 
     captured = capsys.readouterr()
-    assert exit_code == EXIT_INVALID
-    assert "legacy plan state detected" in captured.err
-    assert "docs/state-and-recovery.md" in captured.err
-    assert legacy_path.read_bytes() == original
+    assert exit_code == 0
+    assert "next phase: phase-1 One" in captured.out
+    assert captured.err == ""
+    assert unrelated_path.read_bytes() == original
     assert not default_state_path(tmp_path, plan_path).exists()
 
 
-def test_config_named_plan_detects_legacy_state_config_collision(
+def test_run_ignores_state_outside_current_keyed_layout(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(_phase(), encoding="utf-8")
+    unrelated_path = tmp_path / ".ai-session-handler" / "plan.json"
+    write_state(unrelated_path, RunnerState(completed_phase_ids=("phase-1",)))
+    original = unrelated_path.read_bytes()
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        "print('<phase-complete>Used keyed state.</phase-complete>')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--plan",
+            "plan.md",
+            "--agent-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(agent_path))}",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    assert read_state(default_state_path(tmp_path, plan_path)).completed_phase_ids == ("phase-1",)
+    assert unrelated_path.read_bytes() == original
+
+
+def test_config_named_plan_has_no_generated_state_collision_heuristic(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
@@ -652,9 +686,9 @@ def test_config_named_plan_detects_legacy_state_config_collision(
     exit_code = main(["status", "--plan", "config.md"])
 
     captured = capsys.readouterr()
-    assert exit_code == EXIT_INVALID
-    assert "legacy plan state detected" in captured.err
-    assert str(collision_path) in captured.err
+    assert exit_code == 0
+    assert "next phase: phase-1 One" in captured.out
+    assert captured.err == ""
     assert collision_path.read_bytes() == original
     assert not default_state_path(tmp_path, plan_path).exists()
 

@@ -42,6 +42,11 @@ Keep changes scoped to the requested phase, workflow, or user request.
 - Do not perform git workflow operations from the runner. No commit, push,
   checkout, reset, clean, stash, branch creation, or automatic worktree behavior.
 - Treat user clarification as a first-class stop state, not as failure.
+- Do not add backward compatibility for plan formats, generated state, or
+  generated artifact layouts. Do not add schema-version fields, migrations,
+  legacy-format detection, compatibility readers, or fallback paths. Finish a
+  partially executed plan with the same AI Session Handler release that created
+  its state; after upgrading, start new work with fresh generated state.
 
 ## Implementation Simplicity (KISS)
 
@@ -236,7 +241,9 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Treat state files as runner-owned. Worker processes may read the state context
   provided in their prompt but must not create, edit, replace, or delete state;
   they report outcomes only through terminal markers.
-- Include schema versions in persisted JSON.
+- Persist only the current state shape and validate it directly. If generated
+  state does not match the running release, report the invalid file or key; do
+  not identify, migrate, translate, or otherwise support an earlier shape.
 - Preserve enough state for restart: accepted plan hash, completed phase ids,
   current phase, stop reason, last run id, transcript path, timestamps, and
   worker summary.

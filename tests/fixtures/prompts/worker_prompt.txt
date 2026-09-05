@@ -31,7 +31,6 @@ FAILURE MODES
 - Use <phase-complete> only after implementation and validation for this phase are complete.
 
 PREVIOUS STATE SUMMARY START
-schema_version: 2
 plan:
   path: docs/plans/example.md
   sha256: abc123

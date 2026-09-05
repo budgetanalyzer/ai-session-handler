@@ -112,14 +112,20 @@ in the worker prompt is read-only context: workers must not modify it and must
 report their outcome through exactly one terminal marker. The runner owns all
 durable state transitions derived from that marker.
 
-Before launch, schema 2 state records a prepared active attempt; after launch it records a running
-attempt and a reuse-resistant Linux process identity when available. If the handler disappears
-before a terminal result is durable, an ordinary run refuses to repeat that phase. `status` remains
+Before launch, state records a prepared active attempt; after launch it records a running attempt
+and a reuse-resistant Linux process identity when available. If the handler disappears before a
+terminal result is durable, an ordinary run refuses to repeat that phase. `status` remains
 read-only and reports the unresolved attempt and its artifacts. After inspecting partial changes
 and stopping any surviving worker, use `--retry-stopped`; the runner refuses the retry while the
 recorded worker can still be positively identified as alive. See
-[State and recovery](docs/state-and-recovery.md) for lifecycle details and the manual schema 1
-transition.
+[State and recovery](docs/state-and-recovery.md) for lifecycle details.
+
+Plans and generated state are release-scoped. Finish a partially executed plan with the same AI
+Session Handler release that created its state; after upgrading, begin new work with fresh
+generated state. The runner reads only its current generated formats and provides no migration,
+compatibility reader, or supported mixed-release workflow. Existing generated files remain
+user-owned evidence and may be archived manually, but the runner does not search for or interpret
+files outside the current keyed layout.
 
 The generated layout is:
 
@@ -262,12 +268,8 @@ only applies while initializing a new invocation, after completed phase ids are 
 
 The runner also compares the stored canonical plan path independently of the
 content hash. Renaming or moving a plan therefore requires an explicit decision
-about whether to start fresh or carry its history forward. Existing stem-based
-state from earlier versions is never silently ignored or reassigned; `run` and
-`status` stop with a transition diagnostic. See
-[State and recovery](docs/state-and-recovery.md) for the backup, identity-check,
-and manual relocation procedure, including the special legacy collision for a
-plan named `config.md`.
+about whether to start fresh or carry current-release history forward. See
+[State and recovery](docs/state-and-recovery.md) for the keyed layout and identity checks.
 
 ## Plan Format
 
