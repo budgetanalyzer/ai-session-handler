@@ -358,7 +358,7 @@ least the opening length; an unclosed fence is an input error with its opening l
 A plan follows `Plan -> Phase -> Execution steps`. Each phase is one fresh worker process and
 contains one or more concrete execution steps. Size phases first around coherent, independently
 verifiable checkpoints, even when consecutive phases edit the same files. Context targets such as
-25–35%, a roughly ten-minute duration, and a 40% warning point are only provisional calibration
+30–40%, a roughly ten-minute duration, and a 40% warning point are only provisional calibration
 aids: the runner does not measure them, and they are not universal quality thresholds.
 Every phase also requires exactly one `### Workspace` section containing one
 relative path such as `.` or `../transaction-service`; see the canonical guide
@@ -460,3 +460,9 @@ state key to fix when that context is available.
 .venv/bin/python -m mypy src tests
 .venv/bin/python -m pytest
 ```
+
+## Continuous Integration
+
+The GitHub Actions `Build` workflow runs for pushes and pull requests targeting `main`, and can be
+started manually. On Python 3.12 it checks Ruff formatting and linting, runs strict mypy type
+checking, and executes the full pytest suite.

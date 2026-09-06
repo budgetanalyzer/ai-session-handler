@@ -98,7 +98,7 @@ hardening after earlier focused checks pass.
 
 Context percentages and elapsed-time estimates are optional, provisional calibration aids, not
 runner limits or universal quality thresholds. If no repository-specific measurements are
-available, 25–35% of an expected context window and roughly ten minutes of focused work can be used
+available, 30–40% of an expected context window and roughly ten minutes of focused work can be used
 as starting estimates; approaching 40% can prompt a second look. The runner measures none of these,
 provider tools may compact context, and task complexity can make the estimates inaccurate. Prefer
 the useful checkpoint even when it is smaller or larger than a heuristic suggests.
