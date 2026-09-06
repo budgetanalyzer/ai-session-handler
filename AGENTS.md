@@ -31,6 +31,10 @@ rg -n "PATTERN" src tests docs README.md AGENTS.md
 .venv/bin/ai-session-handler --help
 ```
 
+## Code Exploration
+
+NEVER use Agent/subagent tools for code exploration. Use Grep, Glob, and Read directly.
+
 ## Sources of Truth
 
 - Read `README.md` before changing setup, CLI usage, entrypoints, or provider examples.
