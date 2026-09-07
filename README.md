@@ -130,10 +130,14 @@ or stderr. Recognized tags in examples or diagnostics, malformed framing, extra 
 on both streams fail closed. See [Worker result protocol](docs/worker-protocol.md) for the complete
 contract. The runner owns all durable state transitions derived from the result.
 
-Every fresh worker receives the accepted plan's global preamble and exact selected phase body. It
-also receives the latest relevant summary plus a compact, status-labeled index of earlier committed
-outcome paths, so prior decisions and verification evidence remain discoverable without replaying
-all transcripts. Terminal summaries are expected to name changed artifacts, validation commands
+Every fresh worker receives exact copies of the global preamble and selected phase body from the
+invocation's accepted immutable plan snapshot. Those embedded sections are sufficient for ordinary
+phase startup; workers need not reread the complete source plan unless diagnosing a mismatch or
+repository contradiction. The prompt contains the latest relevant terminal summary once, plus a
+compact, status-labeled index of earlier committed outcome paths. Workers open an indexed outcome
+only when its concrete decision, validation evidence, limitation, or recovery history affects the
+selected phase. Complete transcripts remain available as diagnostic evidence but are not routine
+handoff reading. Terminal summaries are expected to name changed artifacts, validation commands
 and results, decisions, limitations, and durable handoff references. Outcome bodies remain plain
 text; the runner does not parse summary headings or generate compaction.
 
@@ -354,6 +358,11 @@ Text before the first executable phase is retained as the plan's global preamble
 workspace headings inside fenced code blocks are examples, not executable structure. The supported
 fences use at least three backticks or tildes and must be closed with the same character and at
 least the opening length; an unclosed fence is an input error with its opening line reported.
+
+Keep the preamble concise and focused on plan-wide intent, safety, scope, and acceptance constraints.
+Put detailed background and durable design context in ordinary repository documentation and link
+to it from the preamble or a phase's required context. This is authoring guidance, not a size rule:
+the runner does not limit, warn about, truncate, summarize, normalize, or rewrite preamble content.
 
 A plan follows `Plan -> Phase -> Execution steps`. Each phase is one fresh worker process and
 contains one or more concrete execution steps. Size phases first around coherent, independently

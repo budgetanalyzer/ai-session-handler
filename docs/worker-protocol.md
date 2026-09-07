@@ -51,12 +51,19 @@ directory to the declared execution workspace, but it does not provide filesyste
 guarantee that a user-supplied provider command starts a new conversation. The prompt requires the
 worker to restrict execution work to the selected phase and workspace.
 
-Every worker prompt contains clearly delimited copies of the accepted plan's global preamble and
-the selected phase body. Workers must read both and follow referenced context. The prompt also
-carries the latest relevant terminal summary and a compact phase/status/path index of earlier
-runner-committed outcomes. Workers should open indexed JSON records when earlier decisions or
-verification evidence is relevant; complete transcripts are retained separately rather than
-copied into each process.
+Every worker prompt contains clearly delimited, exact copies of the global preamble and selected
+phase body from the invocation's accepted immutable plan snapshot. Workers use both embedded
+sections and their referenced context for ordinary phase startup instead of rereading the complete
+source plan. The prompt's `DURABLE HANDOFF CONTEXT` contains the latest relevant terminal summary
+once. `PREVIOUS STATE SUMMARY` retains last-run identity, status, timestamps, exit code, execution
+workspace, and artifact paths without repeating the summary prose.
+
+A compact phase/status/path index keeps every earlier runner-committed outcome discoverable.
+Workers open an indexed JSON record only when its concrete decision, validation evidence,
+limitation, or recovery history affects the selected phase. Complete transcripts are diagnostic
+evidence and should not be replayed by default. A worker may still inspect source plan bytes when
+diagnosing a mismatch or repository contradiction, and may inspect outcomes or transcripts when
+the selected phase or recovery evidence requires them.
 
 Every terminal result body remains plain text, with no runner-parsed internal heading grammar. It
 should concisely identify changed artifacts, validation commands and results, decisions, remaining

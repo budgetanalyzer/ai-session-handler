@@ -7,9 +7,11 @@ not executable until it uses the explicit hierarchy `Plan -> Phase -> Execution 
 
 Create the plan as a Markdown file in the plan repository, commonly under `docs/plans/`. Before
 filling in detailed steps, sketch the independently verifiable implementation checkpoints and give
-each checkpoint its own phase. Reusing the same workspace and reopening the same files in later
-phases is normal. Use the following template, replace every `TODO`, and repeat the phase block for
-each checkpoint:
+each checkpoint its own phase. Keep the preamble concise: state plan-wide intent, safety, scope, and
+acceptance constraints, and link to ordinary repository documentation for detailed background or
+durable design context. A phase's required context should name the specific documents relevant to
+that checkpoint. Reusing the same workspace and reopening the same files in later phases is normal.
+Use the following template, replace every `TODO`, and repeat the phase block for each checkpoint:
 
 ```markdown
 # TODO Plan Title
@@ -137,7 +139,12 @@ The plan must be valid UTF-8. At invocation initialization, the runner reads the
 hashes those exact bytes, and parses the same read into an immutable snapshot. Line endings are
 not normalized: CRLF bytes contribute to the accepted hash and remain CRLF in captured preamble
 and phase bodies. Text before the first executable phase is the global preamble. It is retained as
-plan-wide intent in the snapshot, but it is not itself an execution unit.
+plan-wide intent in the snapshot, but it is not itself an execution unit. The prompt embeds an
+exact copy of that preamble and the exact selected phase body from the invocation's accepted
+immutable snapshot, so workers use those sections for ordinary startup instead of rereading the
+complete source plan. The runner imposes no byte, character, token, line, or section-count limit on
+the preamble or rendered prompt and does not truncate, summarize, normalize, or rewrite either plan
+section. Concision and durable-document links are authoring guidance only.
 
 The supported fenced-code subset uses backtick or tilde fences of at least three matching
 characters, optionally indented by up to three spaces. A closing fence must use the same character

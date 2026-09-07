@@ -59,8 +59,15 @@ def render_worker_prompt(context: PromptContext) -> str:
         "- Read repository instructions first from execution_workspace_path, beginning with "
         "the AGENTS.md at its root.\n"
         "- Inspect current repository state before editing.\n"
-        "- Read the global plan intent, durable handoff context, and any prior outcome records "
-        "relevant to this phase before making decisions.\n"
+        "- GLOBAL PLAN INTENT and SELECTED PHASE BODY are exact copies from this invocation's "
+        "accepted immutable plan snapshot. Use them for ordinary phase startup instead of "
+        "rereading the complete source plan.\n"
+        "- Read the global plan intent and durable handoff context before making decisions. "
+        "Inspect an indexed outcome only when its concrete decision, validation evidence, "
+        "limitation, or recovery history affects this phase.\n"
+        "- Treat complete transcripts as diagnostic evidence and do not replay them by default. "
+        "You may inspect source plan bytes to diagnose a mismatch or repository contradiction, "
+        "and inspect outcomes or transcripts when this phase or recovery evidence requires it.\n"
         f"- Implement exactly selected phase {context.phase.id}: {context.phase.title}.\n"
         "- Do not proceed to later phases.\n"
         "- Restrict execution work to execution_workspace_path and the selected phase. Do not "
@@ -200,7 +207,6 @@ def summarize_previous_state(state: RunnerState) -> str:
                 f"  prompt_path: {state.last_run.prompt_path}",
                 f"  transcript_path: {state.last_run.transcript_path}",
                 f"  outcome_path: {_optional_text(state.last_run.outcome_path)}",
-                f"  summary: {state.last_run.summary}",
             ]
         )
 

@@ -89,10 +89,16 @@ def test_installed_entrypoint_preserves_handoffs_across_clarification_and_blocke
         "        print('<phase-needs-clarification>Which result field?"
         "</phase-needs-clarification>')\n"
         "elif Path('phase-three-ready').exists():\n"
+        "    assert prompt.count('Create phase-three-ready.') == 1\n"
+        "    assert prompt.count('Keep prior outcomes discoverable.') == 1\n"
+        "    assert 'phase-1 | phase-complete |' in prompt\n"
+        "    assert 'phase-2 | needs-clarification |' in prompt\n"
         "    assert 'phase-2 | phase-complete |' in prompt\n"
+        "    assert 'phase-3 | blocked |' not in prompt\n"
         "    print('<phase-complete>Integrated workflow complete.</phase-complete>')\n"
         "else:\n"
-        "    print('<phase-blocked>Create phase-three-ready.</phase-blocked>')\n",
+        "    print('<phase-blocked>Create phase-three-ready.\\n'\n"
+        "          'Keep prior outcomes discoverable.</phase-blocked>')\n",
         encoding="utf-8",
     )
     agent_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(str(worker_path))}"
@@ -181,6 +187,22 @@ def test_installed_entrypoint_preserves_handoffs_across_clarification_and_blocke
         "Clarification: result field is result_kind." in prompt.read_text(encoding="utf-8")
         and "selected_phase_id: phase-2" in prompt.read_text(encoding="utf-8")
         for prompt in prompts
+    )
+    final_retry_prompt = next(
+        prompt.read_text(encoding="utf-8")
+        for prompt in prompts
+        if "Keep prior outcomes discoverable." in prompt.read_text(encoding="utf-8")
+    )
+    assert final_retry_prompt.count("Create phase-three-ready.") == 1
+    assert final_retry_prompt.count("Keep prior outcomes discoverable.") == 1
+    for reference in final_state.committed_outcomes[:3]:
+        assert (
+            f"{reference.phase_id} | {reference.status.value} | {reference.path}"
+            in final_retry_prompt
+        )
+    assert (
+        final_state.committed_outcomes[3].path
+        not in final_retry_prompt.split("earlier_committed_outcomes:", 1)[1]
     )
 
 

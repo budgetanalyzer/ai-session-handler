@@ -28,13 +28,22 @@ handler:
 - Compaction can summarize earlier turns when a provider conversation grows long.
 - Native subagents can move independent exploration, tests, or review off the main thread and
   return distilled results.
-- A later handler phase can still start a new process from the plan preamble, phase body, latest
-  summary, and committed outcome index.
+- A later handler phase can still start a new process from exact copies of the accepted snapshot's
+  plan preamble and selected phase body, the latest summary, and the committed outcome index.
 
 These provider features are not scheduled or recorded separately by the handler. If a worker uses
 them, the phase still has one runner-owned attempt, transcript, terminal result, and acceptance
 boundary. The command template determines whether a process starts or resumes a provider
 conversation and which provider features are available.
+
+The embedded preamble and selected phase body are sufficient for ordinary phase startup. The
+latest terminal summary appears once in durable handoff context, while previous-state metadata
+retains run identity, status, timestamps, exit code, execution workspace, and artifact paths. Earlier
+outcomes remain discoverable through a phase/status/path index and should be opened only when a
+concrete decision, validation result, limitation, or recovery history affects the selected phase.
+Complete transcripts are diagnostic evidence rather than routine handoff replay. Workers may still
+inspect source plan bytes, outcomes, or transcripts when diagnosing a mismatch, repository
+contradiction, or interrupted execution.
 
 Official OpenAI documentation describes [Codex subagent workflows](https://learn.chatgpt.com/docs/agent-configuration/subagents)
 and the Codex CLI [`/compact` command](https://learn.chatgpt.com/docs/developer-commands?surface=cli#keep-transcripts-lean-with-compact).

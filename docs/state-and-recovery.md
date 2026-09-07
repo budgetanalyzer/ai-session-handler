@@ -65,12 +65,18 @@ not make the worker's repository edits atomic or exactly once. An interrupted wo
 partial changes before state was committed, so an operator must inspect the execution workspace
 before retrying.
 
-Fresh worker prompts include the accepted plan's exact global preamble, the exact selected phase
-body, the latest relevant terminal summary, and a compact index of earlier committed outcome paths.
-The index labels phase and status so failed attempts are not presented as completed prerequisites.
-Workers read relevant indexed records when earlier decisions or validation evidence matter; full
-transcripts remain available but are not replayed into every prompt. Durable design decisions that
-later phases depend on belong in ordinary repository documentation, not only in generated history.
+Fresh worker prompts include exact copies of the accepted immutable snapshot's global preamble and
+selected phase body. Workers use those embedded sections for ordinary startup instead of rereading
+the complete source plan. `DURABLE HANDOFF CONTEXT` contains the latest relevant terminal summary
+once; `PREVIOUS STATE SUMMARY` retains the latest run's identity, status, timestamps, exit code,
+execution workspace, and artifact paths without repeating its summary prose. A compact index keeps
+every earlier committed outcome discoverable by phase, status, and path, so failed attempts are not
+presented as completed prerequisites. Workers open indexed records only when a concrete decision,
+validation result, limitation, or recovery history affects the phase. Full transcripts remain
+available for diagnostics and interruption investigation but are not replayed by default. Source
+plan bytes may still be inspected to diagnose a mismatch or repository contradiction. Durable
+design decisions that later phases depend on belong in ordinary repository documentation, not only
+in generated history.
 
 Terminal results are validated independently on stdout and stderr using the framing contract in
 [Worker result protocol](worker-protocol.md). The runner records `invalid-marker` for recognized but

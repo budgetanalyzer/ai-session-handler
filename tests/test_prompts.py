@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,78 @@ def test_render_worker_prompt_includes_global_intent_and_handoff_requirements() 
     assert "phase-1 | phase-complete" not in prompt
     assert "status: phase-complete" in prompt
     assert "Completed parser." in prompt
+
+
+def test_render_worker_prompt_includes_latest_multiline_summary_once() -> None:
+    context = _prompt_context()
+    assert context.state.last_run is not None
+    summary = "Completed parser.\nValidated parser edge cases."
+    state = replace(context.state, last_run=replace(context.state.last_run, summary=summary))
+
+    prompt = render_worker_prompt(replace(context, state=state))
+    previous_state = prompt.split("PREVIOUS STATE SUMMARY START\n", 1)[1].split(
+        "\nPREVIOUS STATE SUMMARY END", 1
+    )[0]
+    handoff = prompt.split("DURABLE HANDOFF CONTEXT START\n", 1)[1].split(
+        "\nDURABLE HANDOFF CONTEXT END", 1
+    )[0]
+
+    assert summary not in previous_state
+    assert "    Completed parser.\n    Validated parser edge cases." in handoff
+    assert prompt.count("Completed parser.") == 1
+    assert prompt.count("Validated parser edge cases.") == 1
+
+
+def test_render_worker_prompt_indexes_earlier_outcomes_by_status_and_path() -> None:
+    context = _prompt_context()
+    assert context.state.last_run is not None
+    latest_path = "/outcomes/latest.json"
+    outcomes = (
+        _outcome_ref("complete", "phase-1", AttemptStatus.PHASE_COMPLETE),
+        _outcome_ref("blocked", "phase-2", AttemptStatus.BLOCKED),
+        _outcome_ref("clarification", "phase-2", AttemptStatus.NEEDS_CLARIFICATION),
+        _outcome_ref("failed", "phase-2", AttemptStatus.AGENT_FAILED),
+        OutcomeRef(
+            attempt_id="latest",
+            phase_id="phase-2",
+            status=AttemptStatus.PHASE_COMPLETE,
+            path=latest_path,
+        ),
+    )
+    state = replace(
+        context.state,
+        committed_outcomes=outcomes,
+        last_run=replace(
+            context.state.last_run,
+            run_id="latest",
+            status=AttemptStatus.PHASE_COMPLETE,
+            outcome_path=latest_path,
+        ),
+    )
+
+    prompt = render_worker_prompt(replace(context, state=state))
+    earlier = prompt.split("earlier_committed_outcomes:\n", 1)[1].split(
+        "\nDURABLE HANDOFF CONTEXT END", 1
+    )[0]
+
+    assert "phase-1 | phase-complete | /outcomes/complete.json" in earlier
+    assert "phase-2 | blocked | /outcomes/blocked.json" in earlier
+    assert "phase-2 | needs-clarification | /outcomes/clarification.json" in earlier
+    assert "phase-2 | agent-failed | /outcomes/failed.json" in earlier
+    assert latest_path not in earlier
+
+
+def test_render_worker_prompt_directs_context_reads_from_accepted_snapshot() -> None:
+    prompt = render_worker_prompt(_prompt_context())
+
+    assert "exact copies from this invocation's accepted immutable plan snapshot" in prompt
+    assert "for ordinary phase startup instead of rereading the complete source plan" in prompt
+    assert "Inspect an indexed outcome only when its concrete decision" in prompt
+    assert (
+        "Treat complete transcripts as diagnostic evidence and do not replay them by default"
+        in prompt
+    )
+    assert "inspect source plan bytes to diagnose a mismatch or repository contradiction" in prompt
 
 
 def test_render_worker_prompt_requires_strict_terminal_marker_framing() -> None:
@@ -159,4 +232,13 @@ def _prompt_context(*, phase: Phase | None = None) -> PromptContext:
             "/plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T120102Z-phase-2.txt"
         ),
         plan_preamble="# Example plan\n\nKeep API names stable.\n",
+    )
+
+
+def _outcome_ref(name: str, phase_id: str, status: AttemptStatus) -> OutcomeRef:
+    return OutcomeRef(
+        attempt_id=name,
+        phase_id=phase_id,
+        status=status,
+        path=f"/outcomes/{name}.json",
     )

@@ -13,7 +13,9 @@ CONTEXT
 INSTRUCTIONS
 - Read repository instructions first from execution_workspace_path, beginning with the AGENTS.md at its root.
 - Inspect current repository state before editing.
-- Read the global plan intent, durable handoff context, and any prior outcome records relevant to this phase before making decisions.
+- GLOBAL PLAN INTENT and SELECTED PHASE BODY are exact copies from this invocation's accepted immutable plan snapshot. Use them for ordinary phase startup instead of rereading the complete source plan.
+- Read the global plan intent and durable handoff context before making decisions. Inspect an indexed outcome only when its concrete decision, validation evidence, limitation, or recovery history affects this phase.
+- Treat complete transcripts as diagnostic evidence and do not replay them by default. You may inspect source plan bytes to diagnose a mismatch or repository contradiction, and inspect outcomes or transcripts when this phase or recovery evidence requires it.
 - Implement exactly selected phase phase-2: Prompt Builder.
 - Do not proceed to later phases.
 - Restrict execution work to execution_workspace_path and the selected phase. Do not perform work in another repository.
@@ -63,7 +65,6 @@ last_run:
   prompt_path: /plan-repo/.ai-session-handler/plans/plan-key/prompts/20260705T115000Z-phase-1.txt
   transcript_path: /plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt
   outcome_path: /plan-repo/.ai-session-handler/plans/plan-key/outcomes/20260705T115000Z-phase-1.json
-  summary: Completed parser.
 PREVIOUS STATE SUMMARY END
 
 DURABLE HANDOFF CONTEXT START
