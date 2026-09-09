@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -28,9 +29,27 @@ def default_config_path(workspace: Path) -> Path:
     return workspace / ".ai-session-handler" / "config.json"
 
 
+def plan_key(workspace: Path, plan_path: Path) -> str:
+    """Return the stable key for a canonical plan path within its workspace."""
+    canonical_workspace = workspace.resolve()
+    canonical_plan = plan_path.resolve()
+    try:
+        relative_plan = canonical_plan.relative_to(canonical_workspace)
+    except ValueError as error:
+        raise ConfigError(
+            f"{canonical_plan}: plan is outside workspace {canonical_workspace}"
+        ) from error
+    return sha256(relative_plan.as_posix().encode("utf-8")).hexdigest()
+
+
+def plan_generated_path(workspace: Path, plan_path: Path) -> Path:
+    """Return the generated directory owned by one plan path."""
+    return workspace / ".ai-session-handler" / "plans" / plan_key(workspace, plan_path)
+
+
 def default_state_path(workspace: Path, plan_path: Path) -> Path:
     """Return the default state path for a plan."""
-    return workspace / ".ai-session-handler" / f"{plan_path.stem}.json"
+    return plan_generated_path(workspace, plan_path) / "state.json"
 
 
 def read_config(path: Path) -> HandlerConfig:
@@ -57,8 +76,7 @@ def read_config(path: Path) -> HandlerConfig:
 def write_example_config(path: Path) -> None:
     """Create an example config file and required generated directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    (path.parent / "prompts").mkdir(parents=True, exist_ok=True)
-    (path.parent / "transcripts").mkdir(parents=True, exist_ok=True)
+    (path.parent / "plans").mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise ConfigError(f"{path}: config already exists")
 
