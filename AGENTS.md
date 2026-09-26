@@ -1,21 +1,55 @@
 # AI Session Handler
 
-## Repository Purpose
+## Repository Position
 
 This repository implements a container-local, provider-agnostic task runner for
 short AI agent sessions. Its job is to run session-sized plan phases in fresh
 agent processes inside the AI workspace container and record durable state and
 transcripts.
 
+Work only in this repository unless a user request explicitly names another
+workspace. Treat `.ai-session-handler/` as generated, runner-owned data; workers
+may inspect referenced records but must not edit them.
+
 ## Session Initialization
 
 At the start of work:
 
 1. Read this `AGENTS.md`.
-2. Inspect the current repository structure before editing.
+2. Inspect the current repository structure with `rg --files` before editing.
 3. If code already exists, read the nearest relevant files before changing them.
 
 Keep changes scoped to the requested phase, workflow, or user request.
+
+## Discovery
+
+Use repository-owned files and entrypoints to discover current structure and behavior:
+
+```bash
+rg --files
+rg -n "PATTERN" src tests docs README.md AGENTS.md
+.venv/bin/ai-session-handler --help
+```
+
+## Code Exploration
+
+NEVER use Agent/subagent tools for code exploration. Use Grep, Glob, and Read directly.
+
+## Sources of Truth
+
+- Read `README.md` before changing setup, CLI usage, entrypoints, or provider examples.
+- Read `docs/plan-format.md` before creating or changing executable plan structure or phase
+  guidance.
+- Read `docs/session-lifecycle.md` before changing process/conversation boundaries, provider
+  feature assumptions, acceptance, or evaluation guidance.
+- Read `docs/state-and-recovery.md` before changing generated layout, state transitions, locks,
+  interruption behavior, or retry workflows.
+- Read `docs/worker-protocol.md` before changing prompts, terminal markers, outcome records, or
+  handoff content.
+- Treat `docs/conversations/` as historical context, not current implementation guidance. Do not
+  update archived conversations unless the user explicitly requests it.
+- Use `pyproject.toml` as the source of truth for package metadata, entrypoints, dependencies, and
+  tool configuration.
 
 ## Core Product Constraints
 
@@ -42,6 +76,11 @@ Keep changes scoped to the requested phase, workflow, or user request.
 - Do not perform git workflow operations from the runner. No commit, push,
   checkout, reset, clean, stash, branch creation, or automatic worktree behavior.
 - Treat user clarification as a first-class stop state, not as failure.
+- Do not add backward compatibility for plan formats, generated state, or
+  generated artifact layouts. Do not add schema-version fields, migrations,
+  legacy-format detection, compatibility readers, or fallback paths. Finish a
+  partially executed plan with the same AI Session Handler release that created
+  its state; after upgrading, start new work with fresh generated state.
 
 ## Implementation Simplicity (KISS)
 
@@ -73,8 +112,9 @@ safety, state integrity, or required behavior.
 
 ## Implemented CLI Workflow
 
-- Use `ai-session-handler init` to create `.ai-session-handler/config.json`,
-  `.ai-session-handler/prompts/`, and `.ai-session-handler/transcripts/`.
+- Use `ai-session-handler init` to create `.ai-session-handler/config.json` and the shared
+  `.ai-session-handler/plans/` directory. Per-plan prompt, outcome, and transcript directories are
+  created under `.ai-session-handler/plans/<plan-key>/` when attempts run.
 - Use `ai-session-handler run --plan PATH --agent-cmd TEMPLATE` to run all
   remaining phases. `PATH` determines the workspace; pass a full plan path to
   run against another repository. Use `--max-phases N` to limit an invocation.
@@ -90,27 +130,15 @@ safety, state integrity, or required behavior.
   Handler, follow the [plan format](docs/plan-format.md), use its canonical
   template, replace every placeholder, and retain the numbered
   `## Phase N: Title` headings. Model the plan as `Plan -> Phase -> Execution
-  steps`: each phase is one session-sized context allocation with exactly one
-  execution workspace and must never perform execution work across repositories.
-  Any repository or workspace switch requires a new phase, regardless of
-  available context capacity. Within one repository, default to fresh phases at
-  independently verifiable checkpoints even when they reopen the same files.
-  Ordinary phases are planned around 25–35% of context and roughly ten minutes of
-  focused work; treat 40% as a warning threshold. Broad work spanning three or
-  more major concerns normally needs at least three phases. The format guide is
-  the canonical contract for phase sizing, boundaries, and workspace declarations.
-
-  Run a specific plan through the workspace wrapper with:
-
-  ```bash
-  ai-session-handler run \
-    --plan /workspace/REPOSITORY/docs/plans/PLAN.md \
-    --quiet \
-    --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high --model MODEL"
-  ```
-
-  Omit `--model MODEL` from the quoted agent command to use the wrapper's
-  configured or default model.
+  steps`: each phase is one fresh worker process with exactly one execution
+  workspace and must never perform execution work across repositories. Any
+  repository or workspace switch requires a new phase, regardless of available
+  context capacity. Within one repository, make coherent, independently
+  verifiable checkpoints the primary phase boundaries, even when later phases
+  reopen the same files. Treat context percentages and time estimates only as
+  provisional calibration aids, never as measured runner limits or universal
+  quality thresholds. The format guide is the canonical contract for phase
+  sizing, boundaries, and workspace declarations.
 
 ## Python Baseline
 
@@ -178,6 +206,9 @@ python -m venv .venv
 .venv/bin/python -m pytest
 ```
 
+If a required verifier cannot run, report the missing prerequisite or failure explicitly instead
+of claiming the change is fully verified.
+
 Recommended initial Ruff settings:
 
 - `line-length = 100`
@@ -222,9 +253,17 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Provider wrappers should accept the worker prompt on stdin, preserve useful
   stdout/stderr for transcripts, return the provider process exit code, and
   preserve the exactly-one-terminal-marker contract expected by the runner.
+- The bundled Codex wrapper requires the external container-installed `codex-lean` executable.
+  Do not treat its model, tools, approvals, sandbox, history, or feature settings as runner
+  defaults. Inspect that launcher before relying on it, and do not modify it from this repository
+  unless the user explicitly expands the workspace and request.
+- A fresh worker process does not guarantee a new provider conversation, and the selected cwd does
+  not confine filesystem access. Keep provider conversation features and tool restrictions in the
+  external command configuration. Follow `docs/session-lifecycle.md` when documenting these
+  distinctions.
 - Stream stdout and stderr while also writing transcripts.
-- Parse terminal markers from combined captured output after process completion
-  or controlled stop.
+- Validate terminal markers independently on captured stdout and stderr after process completion
+  or controlled stop; never manufacture ordering across the two streams.
 - Require exactly one recognized terminal marker.
 - On timeout, terminate the process, wait a short grace period, then kill it.
 - Record failure and stop reasons durably before exiting.
@@ -236,16 +275,22 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Treat state files as runner-owned. Worker processes may read the state context
   provided in their prompt but must not create, edit, replace, or delete state;
   they report outcomes only through terminal markers.
-- Include schema versions in persisted JSON.
-- Preserve enough state for restart: accepted plan hash, completed phase ids,
-  current phase, stop reason, last run id, transcript path, timestamps, and
-  worker summary.
+- Persist only the current state shape and validate it directly. If generated
+  state does not match the running release, report the invalid file or key; do
+  not identify, migrate, translate, or otherwise support an earlier shape.
+- Preserve enough state for restart and handoff: accepted plan identity, completed phase ids,
+  committed outcome references, current phase, active attempt and process identity, stop reason,
+  last run artifacts, timestamps, and worker summary.
 - Fail closed on plan hash mismatch unless an explicit accept-plan-change flow
   verifies completed phase ids still exist.
 - Make JSON output stable and readable with indentation.
 - Preserve phase body text exactly when building prompts.
 - Report parse and validation errors with file paths and line numbers when
   possible.
+- Treat `phase-complete` and `runner-complete` as worker-reported execution status, not independent
+  correctness or user acceptance. Keep final review manual and user-owned.
+- Atomic runner state and outcome writes do not make worker edits exactly once. Preserve unresolved
+  attempt evidence and require the documented inspection/retry flow after interruption.
 
 ## Error Handling
 
@@ -272,6 +317,8 @@ workflow changes.
 - Before updating `AGENTS.md`, read and apply the
   [AGENTS.md checkstyle](https://github.com/budgetanalyzer/orchestration/blob/main/docs/agents-md-checkstyle.md).
 - Do not leave documentation updates as follow-up work.
+- Keep archived conversations historical; update their labels or indexes when needed, but do not
+  rewrite their dated technical content as if it were current guidance.
 
 ## Python Research Baseline
 

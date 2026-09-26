@@ -1,10 +1,17 @@
-# AI Session Handler Architecture Walkthrough
+# Historical: AI Session Handler Architecture Walkthrough
+
+> **Archived snapshot:** This walkthrough describes the repository as it existed on the date
+> below. Its paths, defaults, state shape, process handling, and test counts are historical and
+> must not be used as the current implementation contract. For current behavior, read the
+> [README](../../README.md), [plan format](../plan-format.md),
+> [session lifecycle](../session-lifecycle.md), [state and recovery](../state-and-recovery.md),
+> and [worker protocol](../worker-protocol.md). The conversation is preserved unchanged below.
 
 **Date:** 2026-07-07
 **Participants:** Architect, Codex (GPT-5)
 **Context:** The architect is an experienced Java architect with no Python background and asked for a boring, step-by-step walkthrough of this specific codebase: build flow, tests, user entry points, worker spawning and management, and overall runtime flow.
 
-## The Insight
+## Historical Insight
 
 This repository is a small Python CLI package, not a service. Think "single-purpose command-line orchestrator" rather than application server.
 

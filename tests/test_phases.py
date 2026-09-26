@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from ai_session_handler.phases import (
     PlanParseError,
     parse_phase_file,
     parse_phases,
+    read_plan_snapshot,
     resolve_phase_workspace,
 )
 
@@ -103,6 +105,70 @@ def test_parse_phase_file_preserves_crlf_body(tmp_path: Path) -> None:
     phase = parse_phase_file(plan_path)[0]
 
     assert phase.body.encode("utf-8") == body
+
+
+def test_plan_snapshot_hashes_parsed_bytes_and_preserves_preamble(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plans" / "plan.md"
+    plan_path.parent.mkdir()
+    preamble = b"# Plan\r\n\r\nGlobal intent.\r\n\r\n"
+    body = b"### Workspace\r\n\r\n.\r\n\r\n### Goal\r\nBody\r\n"
+    plan_bytes = preamble + b"## Phase 1: One\r\n" + body
+    plan_path.write_bytes(plan_bytes)
+
+    snapshot = read_plan_snapshot(plan_path.parent / ".." / "plans" / "plan.md")
+
+    assert snapshot.path == plan_path.resolve()
+    assert snapshot.sha256 == sha256(plan_bytes).hexdigest()
+    assert snapshot.preamble.encode("utf-8") == preamble
+    assert snapshot.phases[0].body.encode("utf-8") == body
+
+
+@pytest.mark.parametrize(("fence", "closing_fence"), [("```markdown", "```"), ("~~~~", "~~~~")])
+def test_phase_and_workspace_headings_inside_fences_are_ignored(
+    fence: str,
+    closing_fence: str,
+) -> None:
+    markdown = (
+        "# Plan\n\n"
+        f"{fence}\n"
+        "## Phase 99: Example\n"
+        "### Workspace\n"
+        "../not-real\n"
+        f"{closing_fence}\n"
+        "## Phase 1: Real\n"
+        f"{fence}\n"
+        "## Workspace\n"
+        "### Workspace: example\n"
+        "../also-not-real\n"
+        "## Phase 100: Nested example\n"
+        f"{closing_fence}\n"
+        "### Workspace\n"
+        ".\n"
+        "### Goal\n"
+        "Execute this.\n"
+    )
+
+    phases = parse_phases(markdown, source="plan.md")
+
+    assert [(phase.id, phase.workspace) for phase in phases] == [("phase-1", ".")]
+    assert "## Phase 100: Nested example\n" in phases[0].body
+
+
+def test_invalid_utf8_reports_plan_path_and_line(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_bytes(b"# Plan\n\n\xff\n")
+
+    with pytest.raises(PlanParseError) as error:
+        read_plan_snapshot(plan_path)
+
+    assert str(error.value).startswith(f"{plan_path}:3: plan is not valid UTF-8")
+
+
+def test_unclosed_code_fence_reports_opening_line() -> None:
+    with pytest.raises(PlanParseError) as error:
+        parse_phases("# Plan\n```markdown\n## Phase 1: Example\n", source="plan.md")
+
+    assert str(error.value) == "plan.md:2: unclosed backtick code fence"
 
 
 @pytest.mark.parametrize(

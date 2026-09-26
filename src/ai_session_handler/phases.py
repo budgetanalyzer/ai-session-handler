@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from typing import Final
 
 PHASE_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#+ Phase ([0-9]+): (.+)$")
 MARKDOWN_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^(#+) (.+)$")
+FENCE_OPEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,16 @@ class Phase:
     body: str
     start_line: int
     end_line: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlanSnapshot:
+    """One immutable read of an executable plan."""
+
+    path: Path
+    sha256: str
+    preamble: str
+    phases: tuple[Phase, ...]
 
 
 class PlanParseError(ValueError):
@@ -44,14 +56,63 @@ class _Heading:
     heading_start_offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class _Fence:
+    marker: str
+    length: int
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class _MarkdownLine:
+    number: int
+    text: str
+    start_offset: int
+    end_offset: int
+
+
+def read_plan_snapshot(path: Path) -> PlanSnapshot:
+    """Read, hash, and parse a plan from the same bytes."""
+    canonical_path = path.resolve()
+    plan_bytes = canonical_path.read_bytes()
+    try:
+        markdown = plan_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        line = plan_bytes[: error.start].count(b"\n") + 1
+        raise PlanParseError(
+            f"plan is not valid UTF-8 at byte {error.start + 1}",
+            source=str(canonical_path),
+            line=line,
+        ) from error
+
+    headings = _find_headings(markdown, source=str(canonical_path))
+    phases = _parse_phases(markdown, headings=headings, source=str(canonical_path))
+    preamble_end = headings[0].heading_start_offset
+    return PlanSnapshot(
+        path=canonical_path,
+        sha256=sha256(plan_bytes).hexdigest(),
+        preamble=markdown[:preamble_end],
+        phases=tuple(phases),
+    )
+
+
 def parse_phase_file(path: Path) -> list[Phase]:
     """Read and parse phases from a markdown plan file."""
-    return parse_phases(path.read_bytes().decode("utf-8"), source=str(path))
+    return list(read_plan_snapshot(path).phases)
 
 
 def parse_phases(markdown: str, *, source: str = "<string>") -> list[Phase]:
     """Parse explicitly marked markdown phases from plan text."""
-    headings = _find_headings(markdown)
+    headings = _find_headings(markdown, source=source)
+    return _parse_phases(markdown, headings=headings, source=source)
+
+
+def _parse_phases(
+    markdown: str,
+    *,
+    headings: list[_Heading],
+    source: str,
+) -> list[Phase]:
     if not headings:
         raise PlanParseError(
             "expected at least one executable phase heading like '## Phase 1: Title'",
@@ -123,19 +184,18 @@ def _parse_workspace(
     source: str,
     phase_heading: _Heading,
 ) -> tuple[str, int]:
-    lines = body.splitlines()
+    lines = _unfenced_lines(body, source=source, line_offset=phase_heading.line)
     workspace_headings: list[tuple[int, int]] = []
     malformed_workspace_heading: int | None = None
 
     for index, line in enumerate(lines):
-        match = MARKDOWN_HEADING_PATTERN.fullmatch(line)
+        match = MARKDOWN_HEADING_PATTERN.fullmatch(line.text)
         if match is None or not match.group(2).casefold().startswith("workspace"):
             continue
-        line_number = phase_heading.line + index + 1
         if match.group(1) != "###" or match.group(2) != "Workspace":
-            malformed_workspace_heading = line_number
+            malformed_workspace_heading = line.number
             break
-        workspace_headings.append((index, line_number))
+        workspace_headings.append((index, line.number))
 
     if malformed_workspace_heading is not None:
         raise PlanParseError(
@@ -160,10 +220,10 @@ def _parse_workspace(
     content: list[tuple[str, int]] = []
     for index in range(heading_index + 1, len(lines)):
         line = lines[index]
-        if MARKDOWN_HEADING_PATTERN.fullmatch(line) is not None:
+        if MARKDOWN_HEADING_PATTERN.fullmatch(line.text) is not None:
             break
-        if line.strip():
-            content.append((line.strip(), phase_heading.line + index + 1))
+        if line.text.strip():
+            content.append((line.text.strip(), line.number))
 
     if not content:
         raise PlanParseError(
@@ -188,25 +248,79 @@ def _parse_workspace(
     return workspace, workspace_line
 
 
-def _find_headings(markdown: str) -> list[_Heading]:
+def _find_headings(markdown: str, *, source: str) -> list[_Heading]:
     headings: list[_Heading] = []
-    offset = 0
-    for line_number, line in enumerate(markdown.splitlines(keepends=True), start=1):
-        line_without_ending = line.removesuffix("\n").removesuffix("\r")
-        match = PHASE_HEADING_PATTERN.fullmatch(line_without_ending)
+    for line in _unfenced_lines(markdown, source=source):
+        match = PHASE_HEADING_PATTERN.fullmatch(line.text)
         if match is not None:
             number = int(match.group(1))
             headings.append(
                 _Heading(
                     number=number,
                     title=match.group(2),
-                    line=line_number,
-                    body_start_offset=offset + len(line),
-                    heading_start_offset=offset,
+                    line=line.number,
+                    body_start_offset=line.end_offset,
+                    heading_start_offset=line.start_offset,
                 )
             )
-        offset += len(line)
     return headings
+
+
+def _unfenced_lines(
+    markdown: str,
+    *,
+    source: str,
+    line_offset: int = 0,
+) -> list[_MarkdownLine]:
+    lines: list[_MarkdownLine] = []
+    fence: _Fence | None = None
+    offset = 0
+    for relative_number, raw_line in enumerate(markdown.splitlines(keepends=True), start=1):
+        line_number = line_offset + relative_number
+        text = raw_line.removesuffix("\n").removesuffix("\r")
+        if fence is not None:
+            if _is_closing_fence(text, fence):
+                fence = None
+        else:
+            opening_fence = _opening_fence(text, line_number=line_number)
+            if opening_fence is not None:
+                fence = opening_fence
+            else:
+                lines.append(
+                    _MarkdownLine(
+                        number=line_number,
+                        text=text,
+                        start_offset=offset,
+                        end_offset=offset + len(raw_line),
+                    )
+                )
+        offset += len(raw_line)
+
+    if fence is not None:
+        marker_name = "backtick" if fence.marker == "`" else "tilde"
+        raise PlanParseError(
+            f"unclosed {marker_name} code fence",
+            source=source,
+            line=fence.line,
+        )
+    return lines
+
+
+def _opening_fence(line: str, *, line_number: int) -> _Fence | None:
+    match = FENCE_OPEN_PATTERN.fullmatch(line)
+    if match is None:
+        return None
+    marker_text = match.group(1)
+    if marker_text[0] == "`" and "`" in match.group(2):
+        return None
+    return _Fence(marker=marker_text[0], length=len(marker_text), line=line_number)
+
+
+def _is_closing_fence(line: str, fence: _Fence) -> bool:
+    return (
+        re.fullmatch(rf" {{0,3}}{re.escape(fence.marker)}{{{fence.length},}}[ \t]*", line)
+        is not None
+    )
 
 
 def _validate_headings(headings: list[_Heading], *, source: str) -> None:

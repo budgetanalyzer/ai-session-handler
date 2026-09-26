@@ -4,43 +4,56 @@ CONTEXT
 - plan_workspace_path: /plan-repo
 - execution_workspace_path: /service
 - plan_path: /plan-repo/docs/plans/example.md
-- state_path: /plan-repo/.ai-session-handler/example.json
+- state_path: /plan-repo/.ai-session-handler/plans/plan-key/state.json
 - run_id: 20260705T120102Z-phase-2
-- transcript_path: /plan-repo/.ai-session-handler/transcripts/20260705T120102Z-phase-2.txt
+- transcript_path: /plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T120102Z-phase-2.txt
 - selected_phase_id: phase-2
 - selected_phase_title: Prompt Builder
 
 INSTRUCTIONS
 - Read repository instructions first from execution_workspace_path, beginning with the AGENTS.md at its root.
 - Inspect current repository state before editing.
+- GLOBAL PLAN INTENT and SELECTED PHASE BODY are exact copies from this invocation's accepted immutable plan snapshot. Use them for ordinary phase startup instead of rereading the complete source plan.
+- Read the global plan intent and durable handoff context before making decisions. Inspect an indexed outcome only when its concrete decision, validation evidence, limitation, or recovery history affects this phase.
+- Treat complete transcripts as diagnostic evidence and do not replay them by default. You may inspect source plan bytes to diagnose a mismatch or repository contradiction, and inspect outcomes or transcripts when this phase or recovery evidence requires it.
 - Implement exactly selected phase phase-2: Prompt Builder.
 - Do not proceed to later phases.
+- Restrict execution work to execution_workspace_path and the selected phase. Do not perform work in another repository.
 - Follow the selected phase plan unless repository reality contradicts it.
 - Run the validation commands listed in the selected phase.
 - Do not run git commit, push, checkout, reset, clean, stash, branch creation, or automatic worktree operations.
 - Update only files required for the selected phase.
-- Treat state_path as runner-owned and read-only. Do not create, edit, replace, or delete the state file; report the phase outcome only through the terminal marker.
+- Treat state_path and outcome records as runner-owned and read-only. Do not create, edit, replace, or delete them; report the phase outcome only through the terminal marker.
+- Store durable design context in ordinary repository documentation when this phase requires later phases to rely on it.
 - Do not make design-changing guesses. If implementation requires an unplanned product, architecture, schema, API, or workflow decision, stop with <phase-needs-clarification>.
 - Treat user clarification as a first-class stop state, not as failure.
-- End with exactly one terminal marker from the grammar below.
-- Do not emit more than one terminal marker.
+- End one output stream with exactly one terminal marker from the grammar below. The opening tag must begin at a line boundary, the result must be nonempty, and only whitespace may follow the closing tag on that stream.
+- Do not emit recognized terminal tags anywhere else, including examples, quoted text, fenced blocks, progress, or diagnostics. Do not emit a result on both stdout and stderr.
 
 FAILURE MODES
 - Use <phase-blocked> when the phase cannot be completed without external action.
 - Use <phase-needs-clarification> when a specific user decision is required.
 - Use <phase-complete> only after implementation and validation for this phase are complete.
+- In every terminal result, summarize changed artifacts, validation commands and results, decisions, remaining limitations, and relevant handoff references. Keep the summary concise but sufficient for a fresh worker.
+
+GLOBAL PLAN INTENT START
+# Example plan
+
+Keep API names stable.
+GLOBAL PLAN INTENT END
 
 PREVIOUS STATE SUMMARY START
-schema_version: 1
 plan:
   path: docs/plans/example.md
   sha256: abc123
   accepted_at: 2026-07-05T12:00:00Z
 completed_phase_ids: phase-1
+committed_outcome_count: 1
 current_phase:
   id: phase-2
   title: Prompt Builder
 stop: none
+active_attempt: none
 last_run:
   run_id: 20260705T115000Z-phase-1
   phase_id: phase-1
@@ -48,9 +61,22 @@ last_run:
   started_at: 2026-07-05T11:50:00Z
   finished_at: 2026-07-05T11:55:00Z
   exit_code: 0
-  transcript_path: .ai-session-handler/transcripts/20260705T115000Z-phase-1.txt
-  summary: Completed parser.
+  execution_workspace: /service
+  prompt_path: /plan-repo/.ai-session-handler/plans/plan-key/prompts/20260705T115000Z-phase-1.txt
+  transcript_path: /plan-repo/.ai-session-handler/plans/plan-key/transcripts/20260705T115000Z-phase-1.txt
+  outcome_path: /plan-repo/.ai-session-handler/plans/plan-key/outcomes/20260705T115000Z-phase-1.json
 PREVIOUS STATE SUMMARY END
+
+DURABLE HANDOFF CONTEXT START
+latest_relevant_summary:
+  attempt_id: 20260705T115000Z-phase-1
+  phase_id: phase-1
+  status: phase-complete
+  outcome_path: /plan-repo/.ai-session-handler/plans/plan-key/outcomes/20260705T115000Z-phase-1.json
+  summary:
+    Completed parser.
+earlier_committed_outcomes: none
+DURABLE HANDOFF CONTEXT END
 
 SELECTED PHASE BODY START
 ### Goal
