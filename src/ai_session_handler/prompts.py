@@ -56,8 +56,6 @@ def render_worker_prompt(context: PromptContext) -> str:
         f"- selected_phase_title: {context.phase.title}\n"
         "\n"
         "INSTRUCTIONS\n"
-        "- Read repository instructions first from execution_workspace_path, beginning with "
-        "the AGENTS.md at its root.\n"
         "- Inspect current repository state before editing.\n"
         "- GLOBAL PLAN INTENT and SELECTED PHASE BODY are exact copies from this invocation's "
         "accepted immutable plan snapshot. Use them for ordinary phase startup instead of "

@@ -27,6 +27,12 @@ def test_render_worker_prompt_matches_fixture() -> None:
     assert render_worker_prompt(context) == fixture_path.read_text(encoding="utf-8")
 
 
+def test_render_worker_prompt_does_not_repeat_harness_repository_instructions() -> None:
+    prompt = render_worker_prompt(_prompt_context())
+
+    assert "AGENTS.md" not in prompt
+
+
 def test_render_worker_prompt_handles_body_without_trailing_newline() -> None:
     context = _prompt_context(
         phase=Phase(
