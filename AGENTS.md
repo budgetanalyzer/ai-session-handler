@@ -253,10 +253,11 @@ The runner executes user-supplied commands, so keep this surface narrow.
 - Provider wrappers should accept the worker prompt on stdin, preserve useful
   stdout/stderr for transcripts, return the provider process exit code, and
   preserve the exactly-one-terminal-marker contract expected by the runner.
-- The bundled Codex wrapper requires the external container-installed `codex-lean` executable.
-  Do not treat its model, tools, approvals, sandbox, history, or feature settings as runner
-  defaults. Inspect that launcher before relying on it, and do not modify it from this repository
-  unless the user explicitly expands the workspace and request.
+- The bundled provider wrappers require the external container-installed `codex-lean` or
+  `claude-lean` executable. Do not treat launcher model, tool, permission, prompt, sandbox, history,
+  or feature settings as runner defaults. Inspect the applicable launcher before relying on it,
+  and do not modify it from this repository unless the user explicitly expands the workspace and
+  request.
 - A fresh worker process does not guarantee a new provider conversation, and the selected cwd does
   not confine filesystem access. Keep provider conversation features and tool restrictions in the
   external command configuration. Follow `docs/session-lifecycle.md` when documenting these

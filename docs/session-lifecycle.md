@@ -50,26 +50,31 @@ and the Codex CLI [`/compact` command](https://learn.chatgpt.com/docs/developer-
 Availability and behavior can change with the Codex release and configuration; consult those
 sources rather than treating this repository as the owner of Codex behavior.
 
-## Codex wrapper and external launcher
+## Provider wrappers and external launchers
 
-The optional `ai-session-handler-codex-high` entrypoint is a provider wrapper shipped by this
-repository. It sets high reasoning effort, optionally forwards `--model` through `CODEX_MODEL`,
-invokes `codex-lean exec`, filters marker-like diagnostics, and normalizes the authoritative final
-message into the handler's result protocol.
+The optional `ai-session-handler-codex-high`, `ai-session-handler-claude-high`, and
+`ai-session-handler-claude-medium` entrypoints are provider wrappers shipped by this repository.
+The Codex wrapper sets high reasoning effort, optionally forwards `--model` through `CODEX_MODEL`,
+invokes `codex-lean exec`, and normalizes the authoritative final message. The Claude wrappers
+invoke `claude-lean` in high- or medium-effort print mode, optionally forward `--model`, translate
+stream-json diagnostics, and normalize the last result event. All wrappers filter marker-like
+diagnostics and emit results through the handler protocol.
 
-`codex-lean` is a separate container-installed executable at `/usr/local/bin/codex-lean`; this
-repository does not install, own, or update it. The wrapper fails if that executable is unavailable.
-The installed launcher selects its own approvals, sandbox, tool set, history, feature, and model
-defaults. The Phase 11 inspection found that this container's launcher disables web search, native
-multi-agent features, and several other integrations while selecting no-approval,
-danger-full-access execution. Those are launcher configuration choices, not consequences of using
-fresh handler phases and not guarantees made by the provider-agnostic runner.
+`codex-lean` and `claude-lean` are separate container-installed executables; this repository does
+not install, own, or update them. A wrapper fails if its launcher is unavailable. The Codex
+launcher selects its own approvals, sandbox, tool set, history, feature, and model defaults. The
+Claude launcher owns its tools, permissions, system prompt, and model defaults. These are launcher
+configuration choices, not consequences of using fresh handler phases and not guarantees made by
+the provider-agnostic runner. The Phase 11 Codex inspection found that this container's launcher
+disables web search, native multi-agent features, and several other integrations while selecting
+no-approval, danger-full-access execution.
 
-Before using this wrapper in a different container, inspect the actual `codex-lean` executable and
-decide whether its permissions and features are appropriate. Changing that launcher, enabling
-subagents, or selecting different permissions belongs to the external container configuration.
-Omitting the wrapper's `--model` leaves model selection to an existing `CODEX_MODEL` value or the
-external Codex configuration; the handler does not silently choose a model.
+Before using either wrapper in a different container, inspect the applicable launcher and decide
+whether its permissions and features are appropriate. Changing a launcher, enabling subagents, or
+selecting different permissions belongs to the external container configuration. Omitting
+`--model` leaves Codex selection to `CODEX_MODEL` or external Codex configuration. For Claude,
+Claude Code uses `ANTHROPIC_MODEL`, then user settings and the launcher's defaults. The handler does
+not silently choose a model.
 
 ## Manual final review
 

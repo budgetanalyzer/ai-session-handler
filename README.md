@@ -212,8 +212,9 @@ descendants that outlive a worker process so inherited pipes cannot hold the
 runner open. SIGINT and SIGTERM are managed from immediately before launch
 through group cleanup, pipe closure, and bounded thread joins. A signal during
 startup or cleanup is deferred until the runner can finish owning and stopping
-the group. The bundled Codex wrapper applies the same lifecycle scope to its
-immediate child while keeping that child inside the handler-owned group.
+the group. The bundled Codex and Claude wrappers apply the same lifecycle scope
+to their immediate children while keeping those children inside the
+handler-owned group.
 See [State and recovery](docs/state-and-recovery.md) for the guarantee and its
 limits.
 
@@ -415,8 +416,8 @@ wrapper script and keep that behavior outside the runner:
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
-For Codex high-reasoning runs, use the wrapper script from this repository's
-container-local virtualenv:
+For Codex high-reasoning or Claude high- or medium-effort runs, use the corresponding
+wrapper from this repository's container-local virtualenv:
 
 ```bash
 .venv/bin/ai-session-handler run \
@@ -424,26 +425,40 @@ container-local virtualenv:
   --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-codex-high"
 ```
 
-That wrapper is shipped by this project but remains outside runner internals. It sets Codex's
-high-reasoning mode and requires a separately installed `codex-lean` executable. This repository
-does not install, own, or modify `/usr/local/bin/codex-lean`. That external launcher chooses Codex
-approvals, sandbox, tools, history, features, and defaults; inspect it before use. The Phase 11
-inspection found danger-full-access execution and disabled web search and native multi-agent
-features in this container. Those restrictions are independent of fresh phase execution.
+```bash
+.venv/bin/ai-session-handler run \
+  --plan /workspace/my-project/docs/plans/feature-rollout.md \
+  --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-claude-high"
+```
 
-The wrapper runs `codex-lean exec` with non-colored output,
-streams stdout/stderr as Codex runs, and hides complete live terminal marker blocks. Every
-remaining diagnostic line is prefixed with `[codex] ` and each literal `<` is rendered as `&lt;`,
-so quoted tags, malformed tags, and Markdown fence excerpts remain useful without affecting the
-core parser. Durable transcripts contain this normalized diagnostic representation. The wrapper
-validates the raw final-message file against the strict framing contract, then re-emits only a
-valid result as a separate unprefixed terminal block; missing or invalid final content still causes
-a marker failure. This keeps the core runner provider-agnostic while preserving the runner's
-exactly-one-result contract. Its child remains in the process group created by the core runner, so
-lifecycle cleanup also reaches the provider process. When run directly, the wrapper manages
-catchable termination signals from child launch through its immediate-child cleanup. Use
-`--model MODEL` only for an explicit override; otherwise, the wrapper preserves an existing
-`CODEX_MODEL` value or leaves selection to the external Codex configuration.
+Use `ai-session-handler-claude-medium` in place of `ai-session-handler-claude-high` for
+medium-effort Claude runs.
+
+Both wrappers are shipped by this project but remain outside runner internals. The Codex wrapper
+requires a separately installed `codex-lean`; the Claude wrapper requires a separately installed
+`claude-lean`. This repository does not install, own, or modify either launcher. `codex-lean`
+chooses Codex approvals, sandbox, tools, history, features, and defaults. `claude-lean` owns
+Claude's tools, permissions, system prompt, and model defaults. Inspect the applicable launcher
+before use. The Phase 11 Codex inspection found danger-full-access execution and disabled web
+search and native multi-agent features in this container. Those restrictions are independent of
+fresh phase execution.
+
+The Codex wrapper runs `codex-lean exec` with non-colored output. The Claude wrappers run
+`claude-lean --effort high -p --output-format stream-json --verbose`, or `--effort medium` for the
+medium wrapper; they render assistant text, short tool-use summaries, non-JSON stdout, and stderr
+as diagnostics, and take their authoritative response from the last result event. All wrappers
+hide complete live terminal marker blocks, prefix remaining diagnostics with `[codex] ` or
+`[claude] `, and render each literal `<` as `&lt;`. Durable transcripts contain this normalized
+diagnostic representation. Each wrapper validates its authoritative final response against the
+strict framing contract, then re-emits only a valid result as a separate unprefixed terminal block.
+Missing, invalid, or error final content causes marker failure. This keeps the core runner
+provider-agnostic while preserving the runner's exactly-one-result contract.
+
+Wrapper children remain in the process group created by the core runner, so lifecycle cleanup also
+reaches the provider process. When run directly, each wrapper manages catchable termination
+signals from child launch through immediate-child cleanup. Use `--model MODEL` only for an explicit
+override. Without it, the Codex wrapper preserves `CODEX_MODEL` or external Codex configuration,
+while Claude Code uses `ANTHROPIC_MODEL` and then the user settings and launcher defaults.
 
 A well-framed `phase-complete` result is still the worker's assertion, not automated review or
 user approval. After `runner-complete`, inspect the changes and committed evidence, run final
