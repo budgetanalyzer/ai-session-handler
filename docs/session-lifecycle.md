@@ -52,12 +52,13 @@ sources rather than treating this repository as the owner of Codex behavior.
 
 ## Provider wrappers and external launchers
 
-The optional `ai-session-handler-codex-high` and `ai-session-handler-claude-high` entrypoints are
-provider wrappers shipped by this repository. The Codex wrapper sets high reasoning effort,
-optionally forwards `--model` through `CODEX_MODEL`, invokes `codex-lean exec`, and normalizes the
-authoritative final message. The Claude wrapper invokes `claude-lean` in high-effort print mode,
-optionally forwards `--model`, translates stream-json diagnostics, and normalizes the last result
-event. Both filter marker-like diagnostics and emit results through the handler protocol.
+The optional `ai-session-handler-codex-high`, `ai-session-handler-claude-high`, and
+`ai-session-handler-claude-medium` entrypoints are provider wrappers shipped by this repository.
+The Codex wrapper sets high reasoning effort, optionally forwards `--model` through `CODEX_MODEL`,
+invokes `codex-lean exec`, and normalizes the authoritative final message. The Claude wrappers
+invoke `claude-lean` in high- or medium-effort print mode, optionally forward `--model`, translate
+stream-json diagnostics, and normalize the last result event. All wrappers filter marker-like
+diagnostics and emit results through the handler protocol.
 
 `codex-lean` and `claude-lean` are separate container-installed executables; this repository does
 not install, own, or update them. A wrapper fails if its launcher is unavailable. The Codex

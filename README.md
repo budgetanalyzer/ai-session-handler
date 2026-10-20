@@ -416,7 +416,7 @@ wrapper script and keep that behavior outside the runner:
   --agent-cmd "./scripts/run-agent --prompt {prompt_file} --run {run_id}"
 ```
 
-For Codex high-reasoning or Claude high-effort runs, use the corresponding
+For Codex high-reasoning or Claude high- or medium-effort runs, use the corresponding
 wrapper from this repository's container-local virtualenv:
 
 ```bash
@@ -431,6 +431,9 @@ wrapper from this repository's container-local virtualenv:
   --agent-cmd "/workspace/ai-session-handler/.venv/bin/ai-session-handler-claude-high"
 ```
 
+Use `ai-session-handler-claude-medium` in place of `ai-session-handler-claude-high` for
+medium-effort Claude runs.
+
 Both wrappers are shipped by this project but remain outside runner internals. The Codex wrapper
 requires a separately installed `codex-lean`; the Claude wrapper requires a separately installed
 `claude-lean`. This repository does not install, own, or modify either launcher. `codex-lean`
@@ -440,16 +443,16 @@ before use. The Phase 11 Codex inspection found danger-full-access execution and
 search and native multi-agent features in this container. Those restrictions are independent of
 fresh phase execution.
 
-The Codex wrapper runs `codex-lean exec` with non-colored output. The Claude wrapper runs
-`claude-lean --effort high -p --output-format stream-json --verbose`; it renders assistant text,
-short tool-use summaries, non-JSON stdout, and stderr as diagnostics, and takes its authoritative
-response from the last result event. Both wrappers hide complete live terminal marker blocks,
-prefix remaining diagnostics with `[codex] ` or `[claude] `, and render each literal `<` as
-`&lt;`. Durable transcripts contain this normalized diagnostic representation. Each wrapper
-validates its authoritative final response against the strict framing contract, then re-emits only
-a valid result as a separate unprefixed terminal block. Missing, invalid, or error final content
-causes marker failure. This keeps the core runner provider-agnostic while preserving the runner's
-exactly-one-result contract.
+The Codex wrapper runs `codex-lean exec` with non-colored output. The Claude wrappers run
+`claude-lean --effort high -p --output-format stream-json --verbose`, or `--effort medium` for the
+medium wrapper; they render assistant text, short tool-use summaries, non-JSON stdout, and stderr
+as diagnostics, and take their authoritative response from the last result event. All wrappers
+hide complete live terminal marker blocks, prefix remaining diagnostics with `[codex] ` or
+`[claude] `, and render each literal `<` as `&lt;`. Durable transcripts contain this normalized
+diagnostic representation. Each wrapper validates its authoritative final response against the
+strict framing contract, then re-emits only a valid result as a separate unprefixed terminal block.
+Missing, invalid, or error final content causes marker failure. This keeps the core runner
+provider-agnostic while preserving the runner's exactly-one-result contract.
 
 Wrapper children remain in the process group created by the core runner, so lifecycle cleanup also
 reaches the provider process. When run directly, each wrapper manages catchable termination

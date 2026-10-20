@@ -1,4 +1,4 @@
-"""Tests for the bundled Claude high-effort wrapper."""
+"""Tests for the bundled Claude effort-level wrappers."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import io
 import os
 import signal
 import sys
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 
@@ -18,12 +19,23 @@ from ai_session_handler.markers import (
     TerminalMarker,
     parse_terminal_marker,
 )
-from ai_session_handler.provider_wrappers import claude_high_print_filter
+from ai_session_handler.provider_wrappers import claude_print_filter
+
+type _WrapperMain = Callable[[Sequence[str] | None], int]
 
 
-def test_claude_high_wrapper_runs_print_mode_and_reemits_final_marker(
+@pytest.mark.parametrize(
+    ("wrapper_main", "effort"),
+    [
+        (claude_print_filter.main_high, "high"),
+        (claude_print_filter.main_medium, "medium"),
+    ],
+)
+def test_claude_wrapper_runs_print_mode_and_reemits_final_marker(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    wrapper_main: _WrapperMain,
+    effort: str,
 ) -> None:
     events: list[object] = [
         {
@@ -67,7 +79,7 @@ def test_claude_high_wrapper_runs_print_mode_and_reemits_final_marker(
         events,
         expected_argv=[
             "--effort",
-            "high",
+            effort,
             "-p",
             "--output-format",
             "stream-json",
@@ -77,7 +89,7 @@ def test_claude_high_wrapper_runs_print_mode_and_reemits_final_marker(
         ],
         stderr="warning <phase-blocked>hidden</phase-blocked>\n",
     )
-    stdout, stderr = _run_wrapper(tmp_path, monkeypatch, ["--model", "opus"])
+    stdout, stderr = _run_wrapper(tmp_path, monkeypatch, ["--model", "opus"], wrapper_main)
 
     assert "[claude] Working" in stdout
     assert "[claude] tool_use Bash: command=printf '&lt;tag>' next" in stdout
@@ -112,7 +124,7 @@ def test_claude_high_wrapper_runs_print_mode_and_reemits_final_marker(
         ),
     ],
 )
-def test_claude_high_wrapper_emits_no_marker_for_missing_invalid_or_error_result(
+def test_claude_wrapper_emits_no_marker_for_missing_invalid_or_error_result(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     events: list[object],
@@ -127,7 +139,7 @@ def test_claude_high_wrapper_emits_no_marker_for_missing_invalid_or_error_result
         assert expected_diagnostic in stdout
 
 
-def test_claude_high_wrapper_uses_last_result_event(
+def test_claude_wrapper_uses_last_result_event(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -154,7 +166,7 @@ def test_claude_high_wrapper_uses_last_result_event(
     )
 
 
-def test_claude_high_wrapper_preserves_non_json_lines(
+def test_claude_wrapper_preserves_non_json_lines(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -175,7 +187,7 @@ def test_claude_high_wrapper_preserves_non_json_lines(
     assert parse_terminal_marker(stdout, stderr).text == "Done."
 
 
-def test_claude_high_wrapper_preserves_nonzero_provider_exit(
+def test_claude_wrapper_preserves_nonzero_provider_exit(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -194,13 +206,13 @@ def test_claude_high_wrapper_preserves_nonzero_provider_exit(
     stderr = io.StringIO()
     _configure_streams(tmp_path, monkeypatch, stdout, stderr)
 
-    exit_code = claude_high_print_filter.main([])
+    exit_code = claude_print_filter.main_high([])
 
     assert exit_code == 7
     assert parse_terminal_marker(stdout.getvalue(), stderr.getvalue()).text == "Provider claim."
 
 
-def test_claude_high_wrapper_cleans_up_child_after_output_failure(
+def test_claude_wrapper_cleans_up_child_after_output_failure(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -227,7 +239,7 @@ def test_claude_high_wrapper_cleans_up_child_after_output_failure(
 
     try:
         with pytest.raises(OSError, match="failed streaming Claude output"):
-            claude_high_print_filter.main([])
+            claude_print_filter.main_high([])
 
         assert not _process_is_running(int(child_pid_path.read_text(encoding="utf-8")))
     finally:
@@ -282,11 +294,12 @@ def _run_wrapper(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     argv: list[str] | None = None,
+    wrapper_main: _WrapperMain = claude_print_filter.main_high,
 ) -> tuple[str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     _configure_streams(tmp_path, monkeypatch, stdout, stderr)
-    assert claude_high_print_filter.main(argv or []) == 0
+    assert wrapper_main(argv or []) == 0
     return stdout.getvalue(), stderr.getvalue()
 
 

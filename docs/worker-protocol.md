@@ -89,15 +89,16 @@ Core execution remains provider-agnostic. A wrapper that translates provider-spe
 - validate that response with the framing rules above and emit at most that one normalized result;
 - preserve the provider process exit code and keep its child within the handler-owned process group.
 
-The bundled `ai-session-handler-codex-high` and `ai-session-handler-claude-high` wrappers hide
-complete result blocks from live output. They render remaining diagnostics with a `[codex] ` or
-`[claude] ` prefix and escape each literal `<` as `&lt;`. The prefix keeps backtick and tilde
+The bundled `ai-session-handler-codex-high`, `ai-session-handler-claude-high`, and
+`ai-session-handler-claude-medium` wrappers hide complete result blocks from live output. They
+render remaining diagnostics with a `[codex] ` or `[claude] ` prefix and escape each literal `<` as
+`&lt;`. The prefix keeps backtick and tilde
 excerpts from changing Markdown fence state, while escaping makes exact, truncated, and malformed
 result tags inert. This normalization is present in live output and durable transcripts; line
 boundaries are preserved, and each wrapper terminates an unfinished diagnostic line before
 emitting a result.
 
-The Codex wrapper validates the raw final-message file, while the Claude wrapper validates the last
+The Codex wrapper validates the raw final-message file, while the Claude wrappers validate the last
 stream-json result event. Each validates against the strict rules above before normalization and
 emits only a valid result as a separate, unprefixed terminal block. Missing, invalid, or error final
 content cannot be replaced by a completion claim in live output. Invalid nonempty final content is

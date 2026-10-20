@@ -23,7 +23,8 @@ dev = [
 
 [project.scripts]
 ai-session-handler = "ai_session_handler.cli:main"
-ai-session-handler-claude-high = "ai_session_handler.provider_wrappers.claude_high_print_filter:main"
+ai-session-handler-claude-high = "ai_session_handler.provider_wrappers.claude_print_filter:main_high"
+ai-session-handler-claude-medium = "ai_session_handler.provider_wrappers.claude_print_filter:main_medium"
 ai-session-handler-codex-high = "ai_session_handler.provider_wrappers.codex_high_exec_filter:main"
 
 [tool.setuptools.packages.find]

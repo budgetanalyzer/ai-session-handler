@@ -1,4 +1,4 @@
-"""Claude high-effort print wrapper with stream-json marker filtering."""
+"""Claude effort-level print wrappers with stream-json marker filtering."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
 from queue import Empty, Queue
-from typing import Final, TextIO, cast
+from typing import Final, Literal, TextIO, cast
 
 from ai_session_handler.markers import (
     MarkerParseError,
@@ -30,6 +30,8 @@ from ai_session_handler.provider_wrappers._common import (
 
 _DIAGNOSTIC_PREFIX: Final[str] = "[claude] "
 _SUMMARY_LIMIT: Final[int] = 160
+
+type _Effort = Literal["high", "medium"]
 
 _write_stdin = write_stdin
 _terminate_child = terminate_child
@@ -50,10 +52,12 @@ class _FinalResult:
     is_error: bool = False
 
 
-def _parse_model(argv: Sequence[str] | None) -> str | None:
+def _parse_model(effort: _Effort, argv: Sequence[str] | None) -> str | None:
     parser = argparse.ArgumentParser(
-        prog="ai-session-handler-claude-high",
-        description="Run claude-lean in high-effort print mode with terminal marker filtering.",
+        prog=f"ai-session-handler-claude-{effort}",
+        description=(
+            f"Run claude-lean in {effort}-effort print mode with terminal marker filtering."
+        ),
     )
     parser.add_argument("--model", help="Claude model alias or full name to pass through")
     args = parser.parse_args(argv)
@@ -170,14 +174,23 @@ def _stream_diagnostics(
         failures.put(error)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main_high(argv: Sequence[str] | None = None) -> int:
     """Run Claude in high-effort print mode and emit only one terminal marker."""
-    model = _parse_model(argv)
+    return _run(argv, "high")
+
+
+def main_medium(argv: Sequence[str] | None = None) -> int:
+    """Run Claude in medium-effort print mode and emit only one terminal marker."""
+    return _run(argv, "medium")
+
+
+def _run(argv: Sequence[str] | None, effort: _Effort) -> int:
+    model = _parse_model(effort, argv)
     prompt = sys.stdin.read()
     command = [
         "claude-lean",
         "--effort",
-        "high",
+        effort,
         "-p",
         "--output-format",
         "stream-json",
@@ -265,4 +278,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_high())
