@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=84.0.0,<85"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "ai-session-handler"
 version = "0.2.0"
 description = "Provider-agnostic runner for short AI agent plan phases."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
 authors = [
   { name = "Bleu Rubin" },
@@ -16,9 +16,14 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-  "mypy",
-  "pytest",
-  "ruff",
+  "mypy>=2.4.0,<3",
+  "pytest>=9.1.1,<10",
+  "ruff>=0.17.0,<0.18",
+]
+
+[dependency-groups]
+build = [
+  "setuptools>=84.0.0,<85",
 ]
 
 [project.scripts]
@@ -26,6 +31,13 @@ ai-session-handler = "ai_session_handler.cli:main"
 ai-session-handler-claude-high = "ai_session_handler.provider_wrappers.claude_print_filter:main_high"
 ai-session-handler-claude-medium = "ai_session_handler.provider_wrappers.claude_print_filter:main_medium"
 ai-session-handler-codex-high = "ai_session_handler.provider_wrappers.codex_high_exec_filter:main"
+
+[tool.dependency-contract]
+# renovate: datasource=pypi depName=uv
+uv = "0.13.5"
+
+[tool.uv]
+no-build-isolation-package = ["ai-session-handler"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
