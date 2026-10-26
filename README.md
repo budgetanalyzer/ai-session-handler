@@ -43,6 +43,24 @@ The bootstrap installs the uv version pinned in `pyproject.toml` into the ignore
 lock. Rerun it after pulling dependency or packaging changes, and use `.venv` for this
 repository's quality gates.
 
+### Reinstalling
+
+The bootstrap command above is also the reinstall command. It is idempotent: each run makes
+`.venv` match `uv.lock` exactly, removing packages that are not in the lock. The project is
+installed in editable mode, so source edits take effect without a reinstall. Rerun the bootstrap
+after switching branches or pulling changes to `pyproject.toml`, `uv.lock`, `.python-version`, or
+the entry points.
+
+For a clean reinstall, for example to replace a `.venv` created by the earlier pip-based setup or
+to recover from a broken environment, delete the generated environments and bootstrap again:
+
+```bash
+rm -rf .venv .dependency-tools
+PYTHONPATH=src python3 -m ai_session_handler.dev_bootstrap
+```
+
+Do not use `pip install` or `uv pip install` into `.venv`; the uv-created environment has no pip.
+
 Refreshing `uv.lock` is an explicit maintenance operation. Before changing dependency bounds,
 refreshing the lock, or reviewing a Renovate pull request, read
 [Dependency maintenance](docs/dependency-maintenance.md), which owns the refresh commands,
