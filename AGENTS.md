@@ -49,7 +49,14 @@ NEVER use Agent/subagent tools for code exploration. Use Grep, Glob, and Read di
 - Treat `docs/conversations/` as historical context, not current implementation guidance. Do not
   update archived conversations unless the user explicitly requests it.
 - Use `pyproject.toml` as the source of truth for package metadata, entrypoints, dependencies, and
-  tool configuration.
+  tool configuration, including the single exact uv pin in `[tool.dependency-contract]`. Use
+  `.python-version` for the exact Python patch and `uv.lock` for the exact development graph.
+- Read `docs/dependency-maintenance.md` before changing dependency bounds, the uv or Python pin,
+  `uv.lock`, `renovate.json`, workflow Action references, or the bootstrap; when the bootstrap
+  reports a stale lock; and before reviewing a Renovate pull request. It owns the refresh
+  commands, Renovate behavior, failure triage, and hosted activation status. Ecosystem policy and
+  administrator settings stay in the orchestration repository's
+  `docs/dependency-automation.md`.
 
 ## Core Product Constraints
 
@@ -71,6 +78,13 @@ NEVER use Agent/subagent tools for code exploration. Use Grep, Glob, and Read di
 - Keep runtime dependencies empty for v1 unless the user explicitly accepts a
   dependency and the rationale is documented.
 - Keep development dependencies separate from runtime dependencies.
+- Keep normal setup, tests, and CI frozen: they must never refresh `uv.lock`. Refresh the lock only
+  as an explicit, reviewed maintenance operation, never hand-edit it, and never merge a manifest
+  change without its lock refresh.
+- Never repeat exact uv or Python patch versions outside `pyproject.toml` and `.python-version`;
+  refer to the owner file or to `.dependency-tools/uv-<pin>/`. A pin-reference test enforces this.
+- Do not describe hosted Renovate automation as active until the human activation checklist in
+  `docs/dependency-maintenance.md` has succeeded.
 - Do not mutate the source plan file as runner state. Store runner state under a
   dedicated generated directory.
 - Do not perform git workflow operations from the runner. No commit, push,
@@ -162,7 +176,7 @@ system, not loose scripting glue.
   should call it through `SystemExit`.
 - When creating Python project structure, tighten `.gitignore` for this
   repo. Keep generated Python artifacts out of version control: `.venv/`,
-  `.mypy_cache/`, `.ruff_cache/`, `dist/`, `build/`, `*.egg-info/`,
+  `.dependency-tools/`, `.mypy_cache/`, `.ruff_cache/`, `dist/`, `build/`, `*.egg-info/`,
   `__pycache__/`, `.coverage`, `htmlcov/`, and `.pytest_cache/`.
 
 ## Typing Standards
@@ -189,15 +203,18 @@ Do not add Black, isort, Flake8, or autopep8 unless the user explicitly asks for
 that tool split.
 
 Expected commands in this workspace use the repository-local virtualenv. If
-`.venv/` is missing, create/install the dev environment first rather than
-falling back to global tooling. The virtualenv is container-owned for this
-project; install the package and development tools in editable mode inside the
-container:
+`.venv/` is missing or dependency files changed, run the repository-owned
+bootstrap first rather than falling back to global tooling or pip. The
+virtualenv is container-owned for this project; the bootstrap installs the
+pinned uv under `.dependency-tools/`, checks `uv.lock`, and synchronizes `.venv`
+from it in frozen mode, including the editable package:
 
 ```bash
-python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+PYTHONPATH=src python3 -m ai_session_handler.dev_bootstrap
 ```
+
+If the bootstrap fails, report its message; do not refresh `uv.lock`, install
+into `.venv` with pip, or relax the frozen check to make setup pass.
 
 ```bash
 .venv/bin/python -m ruff format .
@@ -335,10 +352,11 @@ practice:
 - pytest remains the practical default for CLI and filesystem-heavy tests; its
   guidance favors isolated test layouts, strict config where possible, and
   import modes that avoid path surprises.
-- `uv` is commonly seen in modern Python workflows, but do not make it required
-  for this repo unless the project intentionally adopts it. Maintain a standard
-  `.venv/bin/python -m pip install -e ".[dev]"` workflow inside the container
-  unless a package-manager decision is documented.
+- This repository has intentionally adopted `uv` for its development graph:
+  one exact pin in `pyproject.toml`, an isolated tool environment under
+  `.dependency-tools/`, a checked-in `uv.lock`, and the frozen bootstrap above.
+  Do not reintroduce a pip-based `.venv` setup or a second package manager.
+  `docs/dependency-maintenance.md` documents the decision and workflow.
 
 Reference sources for future checks: Python Packaging User Guide, PEP 8, PEP
 257, Ruff documentation, mypy documentation, and pytest good integration

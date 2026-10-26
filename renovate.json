@@ -1,0 +1,70 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>budgetanalyzer/orchestration//renovate-presets/default"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the isolated uv bootstrap pin",
+      "managerFilePatterns": [
+        "/^pyproject\\.toml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=pypi depName=uv\\s+uv\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "uv",
+      "versioningTemplate": "pep440"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep both setuptools build declarations aligned",
+      "matchManagers": [
+        "pep621"
+      ],
+      "matchPackageNames": [
+        "setuptools"
+      ],
+      "groupName": "setuptools build contract"
+    },
+    {
+      "description": "Require the complete Python dependency contract review",
+      "matchManagers": [
+        "pep621",
+        "pyenv",
+        "custom.regex"
+      ],
+      "prBodyNotes": [
+        "Keep pyproject.toml, .python-version, uv.lock, and the frozen bootstrap graph aligned; a manifest-only change or failed lock refresh is a failed update. Runtime dependencies stay empty; this repository has no scanner or dependency-evidence workflow, so do not add one for this update. Run the frozen bootstrap and the complete local quality suite before merge."
+      ]
+    },
+    {
+      "description": "Keep Python runtime updates within the declared requires-python minor line; minor-line changes are intentional runtime migrations, not routine updates",
+      "matchManagers": [
+        "pyenv",
+        "pep621"
+      ],
+      "matchPackageNames": [
+        "python"
+      ],
+      "allowedVersions": "<3.13"
+    },
+    {
+      "description": "Require workflow review for GitHub Actions",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "prBodyNotes": [
+        "Review the action release notes for runtime and input changes, then run actionlint plus the frozen bootstrap and the complete local quality suite."
+      ]
+    }
+  ]
+}

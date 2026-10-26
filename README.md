@@ -26,20 +26,45 @@ Active contracts are split by concern:
 - [State and recovery](docs/state-and-recovery.md) defines generated layout and interruption
   handling.
 - [Worker result protocol](docs/worker-protocol.md) defines terminal results and durable handoffs.
+- [Dependency maintenance](docs/dependency-maintenance.md) defines the frozen development graph,
+  lock refreshes, and Renovate review.
 
 ## Container Development Setup
 
-Requires Python 3.12 or newer inside the container. From
-`/workspace/ai-session-handler`:
+Requires a Python 3.12 interpreter inside the container. From `/workspace/ai-session-handler`:
 
 ```bash
-python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+PYTHONPATH=src python3 -m ai_session_handler.dev_bootstrap
 ```
 
-If `.venv/` already exists, rerun the editable install command after dependency
-or packaging changes. Keep the virtualenv container-local and use it for this
+The bootstrap installs the uv version pinned in `pyproject.toml` into the ignored
+`.dependency-tools/` directory, fails if `uv.lock` is stale, and synchronizes a container-local
+`.venv` from `uv.lock` for the exact Python patch in `.python-version`. It never refreshes the
+lock. Rerun it after pulling dependency or packaging changes, and use `.venv` for this
 repository's quality gates.
+
+### Reinstalling
+
+The bootstrap command above is also the reinstall command. It is idempotent: each run makes
+`.venv` match `uv.lock` exactly, removing packages that are not in the lock. The project is
+installed in editable mode, so source edits take effect without a reinstall. Rerun the bootstrap
+after switching branches or pulling changes to `pyproject.toml`, `uv.lock`, `.python-version`, or
+the entry points.
+
+For a clean reinstall, for example to replace a `.venv` created by the earlier pip-based setup or
+to recover from a broken environment, delete the generated environments and bootstrap again:
+
+```bash
+rm -rf .venv .dependency-tools
+PYTHONPATH=src python3 -m ai_session_handler.dev_bootstrap
+```
+
+Do not use `pip install` or `uv pip install` into `.venv`; the uv-created environment has no pip.
+
+Refreshing `uv.lock` is an explicit maintenance operation. Before changing dependency bounds,
+refreshing the lock, or reviewing a Renovate pull request, read
+[Dependency maintenance](docs/dependency-maintenance.md), which owns the refresh commands,
+Renovate behavior, and activation status.
 
 ## Entry Points
 
@@ -478,6 +503,8 @@ state key to fix when that context is available.
 
 ## Quality Gates
 
+Run these after the bootstrap:
+
 ```bash
 .venv/bin/python -m ruff format .
 .venv/bin/python -m ruff check . --fix
@@ -488,5 +515,8 @@ state key to fix when that context is available.
 ## Continuous Integration
 
 The GitHub Actions `Build` workflow runs for pushes and pull requests targeting `main`, and can be
-started manually. On Python 3.12 it checks Ruff formatting and linting, runs strict mypy type
-checking, and executes the full pytest suite.
+started manually. It sets up the Python patch named in `.python-version`, runs the same frozen
+bootstrap, then checks Ruff formatting and linting, runs strict mypy type checking, and executes
+the full pytest suite through `.venv/bin/python`. Actions are pinned to full commit SHAs. Renovate
+configuration is checked in, but hosted dependency automation is not active until the
+[activation checklist](docs/dependency-maintenance.md#human-activation-checklist) is complete.

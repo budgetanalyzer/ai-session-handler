@@ -23,6 +23,9 @@ htmlcov/
 # Runner-generated state and artifacts
 .ai-session-handler/
 
+# Repository-local dependency bootstrap tools
+.dependency-tools/
+
 # Local secrets and environment overrides
 .env
 .env.*
